@@ -1,8 +1,8 @@
-FROM node:18-alpine
+FROM node:20-alpine
 
 WORKDIR /app
 
-# Install the official GitHub server AND an SSE proxy adapter
+# Install the official GitHub server AND the SSE proxy adapter
 RUN npm install -g @modelcontextprotocol/server-github mcp-proxy
 
 EXPOSE 8080

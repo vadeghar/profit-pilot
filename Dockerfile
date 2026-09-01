@@ -8,5 +8,5 @@ RUN npm install -g mcp-proxy @modelcontextprotocol/server-github
 EXPOSE 8080
 ENV PORT=8080
 
-# Execute mcp-proxy using individual argument flags
-CMD ["mcp-proxy", "--port", "8080", "--command", "npx", "--args", "-y", "--args", "@modelcontextprotocol/server-github"]
+# Run mcp-proxy directly against the installed binary target
+CMD ["mcp-proxy", "--port", "8080", "--command", "mcp-server-github"]

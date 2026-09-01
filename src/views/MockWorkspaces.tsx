@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   Activity, AlertTriangle, ArrowDownRight, ArrowUpRight, BarChart3, Bell,
   CheckCircle2, Clock3, Download, Filter, Gauge, Layers3, LineChart,
@@ -8,7 +8,9 @@ import {
   Target, TrendingDown, TrendingUp, Wallet, XCircle, Zap
 } from 'lucide-react';
 import { Panel } from '../components/Panel';
-import { initialQuotes, marketNews, positions } from '../data/mockMarket';
+import { initialQuotes, positions } from '../data/mockMarket';
+import { categoryMatches, fetchNews, newsFallback } from '../services/newsApi';
+import type { NewsCategory, NewsItem, NewsResponse } from '../types/news';
 
 const n = (v:number, d=2) => v.toLocaleString('en-IN',{minimumFractionDigits:d,maximumFractionDigits:d});
 const money = (v:number) => `₹ ${n(v)}`;
@@ -40,16 +42,6 @@ const optionRows = [
   ['24,800','156.25','5,180','24,650','24,950','182.35','742'],
   ['24,850','201.10','4,620','24,610','25,000','218.40','690'],
 ];
-const news = [
-  ['10:16','MARKET','NIFTY extends gains; banks and autos lead intraday move.','Positive'],
-  ['10:11','POLICY','RBI policy commentary keeps rate-sensitive names in focus.','Neutral'],
-  ['10:05','GLOBAL','Asian markets trade mixed as investors await US macro data.','Neutral'],
-  ['09:58','SECTOR','IT stocks recover after early-session selling pressure.','Positive'],
-  ['09:49','F&O','NIFTY options activity rises around 24,800 strike.','Positive'],
-  ['09:41','MARKET','India VIX remains contained, supporting risk appetite.','Positive'],
-  ['09:33','BANKING','Private banks see renewed institutional buying.','Positive'],
-];
-
 function HeaderStats({items}:{items:[string,string,string?][]}) {
   return <div className="grid grid-cols-2 gap-px border-b border-[#21262D] bg-[#21262D] md:grid-cols-4">
     {items.map(([a,b,c])=><div key={a} className="bg-[#161B22] px-3 py-2"><div className="text-[10px] uppercase tracking-wider text-[#8B949E]">{a}</div><div className="num mt-1 text-sm">{b}</div>{c&&<div className="mt-0.5 text-[10px] text-[#8B949E]">{c}</div>}</div>)}
@@ -120,21 +112,43 @@ export function HistoryView(){
  </DataWorkspace>
 }
 
+export function StrategyView(){
+ const strategies=[['RSI Momentum','NIFTY 50 · 5m','LIVE','68.4%','+₹ 42,680','24'],['VWAP Reversion','BANKNIFTY · 1m','PAUSED','61.2%','+₹ 18,420','17'],['Opening Range Breakout','NIFTY Options · 5m','BACKTEST','64.8%','+₹ 76,240','31']];
+ return <DataWorkspace title="Strategy Builder" subtitle="Design, test and deploy rule-based strategies" stats={[['Strategies','12'],['Live','3'],['Backtests','84'],['Net Strategy P&L','+₹ 1.82L']]}>
+  <div className="grid gap-3 lg:grid-cols-3">{strategies.map(s=><Panel key={s[0]} title={s[0]}><div className="p-4"><div className="text-xs text-[#8B949E]">{s[1]}</div><div className="mt-3 flex items-center justify-between"><span className={`text-[10px] font-semibold ${s[2]==='LIVE'?'text-[#2EA043]':'text-[#8B949E]'}`}>{s[2]}</span><span className="num text-lg">{s[3]}</span></div><div className="mt-3 grid grid-cols-2 gap-2 text-xs"><div className="border border-[#21262D] p-2"><div className="text-[9px] text-[#8B949E]">P&L</div><div className="num text-[#2EA043]">{s[4]}</div></div><div className="border border-[#21262D] p-2"><div className="text-[9px] text-[#8B949E]">TRADES</div><div className="num">{s[5]}</div></div></div><button className="mt-3 flex h-8 w-full items-center justify-center gap-2 border border-[#30363D] text-xs hover:bg-[#21262D]"><Play className="h-3.5 w-3.5"/>Open Strategy</button></div></Panel>)}</div>
+  <Panel title="Strategy Performance"><div className="p-4"><div className="flex h-44 items-end gap-2">{[25,38,32,48,42,57,63,59,72,66,82,91,87,96,100].map((v,i)=><div key={i} className="flex-1 bg-[#2EA043]" style={{height:`${v}%`,opacity:.45+i/35}} title={`Day ${i+1}`}/>)}</div><div className="mt-2 flex justify-between text-[10px] text-[#8B949E]"><span>D-15</span><span>D-7</span><span>Today</span></div></div></Panel>
+ </DataWorkspace>
+}
+
 export function NewsView(){
- const [filter,setFilter]=useState('ALL');
- const filtered=news.filter(x=>filter==='ALL'||x[1]===filter);
- return <DataWorkspace title="Market News" subtitle="Live market headlines and event context" stats={[['Headlines','124'],['High Impact','9'],['Positive','61'],['Neutral','44']]}>
+ const [filter,setFilter]=useState<NewsCategory|'ALL'>('ALL');
+ const [data,setData]=useState<NewsResponse>(newsFallback);
+ const [loading,setLoading]=useState(false);
+ const [error,setError]=useState<string|null>(null);
+ const loadNews=async()=>{
+  setLoading(true); setError(null);
+  try { setData(await fetchNews()); }
+  catch { setError('Live feed unavailable; showing the latest cached demo feed.'); }
+  finally { setLoading(false); }
+ };
+ useEffect(()=>{ void loadNews(); const id=window.setInterval(()=>void loadNews(), 60_000); return()=>window.clearInterval(id); },[]);
+ const filtered=data.items.filter(item=>categoryMatches(filter,item));
+ const formatTime=(value:string)=>new Intl.DateTimeFormat('en-IN',{hour:'2-digit',minute:'2-digit',hour12:false}).format(new Date(value));
+ const stats:[string,string][]=[['Headlines',String(data.stats.headlines)],['High Impact',String(data.stats.highImpact)],['Positive',String(data.stats.positive)],['Neutral',String(data.stats.neutral)]];
+ return <DataWorkspace title="Market News" subtitle="Live market headlines and event context" stats={stats}>
   <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_300px]">
-   <Panel title="News Feed"><div className="flex gap-1 border-b border-[#21262D] p-2">{['ALL','MARKET','POLICY','GLOBAL','SECTOR','F&O'].map(x=><button onClick={()=>setFilter(x)} key={x} className={`px-3 py-1.5 text-[10px] ${filter===x?'bg-[#2EA043] text-white':'text-[#8B949E] hover:bg-[#21262D]'}`}>{x}</button>)}</div><div className="divide-y divide-[#21262D]">{filtered.map((x,i)=><article key={i} className="p-3 hover:bg-[#1c2229]"><div className="flex items-center gap-2 text-[10px] text-[#8B949E]"><span className="num">{x[0]}</span><span>·</span><span>{x[1]}</span><span className={`ml-auto ${x[3]==='Positive'?'text-[#2EA043]':'text-[#8B949E]'}`}>{x[3]}</span></div><div className="mt-1 text-sm">{x[2]}</div><div className="mt-2 text-[10px] text-[#8B949E]">Source: Profit Pilot Mock Newswire</div></article>)}</div></Panel>
-   <Panel title="Market Events"><div className="space-y-3 p-3">{[['10:30','India PMI','High'],['11:00','US Futures','Medium'],['13:30','Options OI update','Medium'],['15:30','Cash market close','High']].map(x=><div key={x[0]} className="flex gap-3 border-b border-[#21262D] pb-3 last:border-0"><Clock3 className="mt-0.5 h-4 w-4 text-[#8B949E]"/><div><div className="num text-xs">{x[0]}</div><div className="text-xs">{x[1]}</div><div className="text-[9px] text-[#8B949E]">{x[2]} impact</div></div></div>)}</div></Panel>
+   <Panel title="News Feed"><div className="flex gap-1 border-b border-[#21262D] p-2">{['ALL','MARKET','POLICY','GLOBAL','SECTOR','F&O'].map(x=><button onClick={()=>setFilter(x as NewsCategory|'ALL')} key={x} className={`px-3 py-1.5 text-[10px] ${filter===x?'bg-[#2EA043] text-white':'text-[#8B949E] hover:bg-[#21262D]'}`}>{x}</button>)}</div>{error&&<div className="border-b border-[#21262D] px-3 py-2 text-[10px] text-[#D29922]">{error}</div>}<div className="divide-y divide-[#21262D]">{filtered.map((item:NewsItem)=><article key={item.id} className="p-3 hover:bg-[#1c2229]"><div className="flex items-center gap-2 text-[10px] text-[#8B949E]"><span className="num">{formatTime(item.publishedAt)}</span><span>·</span><span>{item.category}</span><span className={`ml-auto ${item.sentiment==='POSITIVE'?'text-[#2EA043]':item.sentiment==='NEGATIVE'?'text-[#F85149]':'text-[#8B949E]'}`}>{item.sentiment[0]+item.sentiment.slice(1).toLowerCase()}</span></div><a href={item.sourceUrl} target="_blank" rel="noreferrer" className="mt-1 block text-sm hover:text-[#2EA043]">{item.title}</a><div className="mt-2 text-[10px] text-[#8B949E]">Source: {item.source}</div></article>)}{!filtered.length&&<div className="p-6 text-center text-xs text-[#8B949E]">No headlines in this section.</div>}</div></Panel>
+   <Panel title="Market Events"><div className="space-y-3 p-3">{data.events.map(event=><div key={event.id} className="flex gap-3 border-b border-[#21262D] pb-3 last:border-0"><Clock3 className="mt-0.5 h-4 w-4 text-[#8B949E]"/><div><div className="num text-xs">{formatTime(event.eventAt)}</div><div className="text-xs">{event.title}</div><div className="text-[9px] text-[#8B949E]">{event.impact[0]+event.impact.slice(1).toLowerCase()} impact</div></div></div>)}{!data.events.length&&<div className="text-xs text-[#8B949E]">No upcoming events.</div>}</div></Panel>
   </div>
+  {loading&&<div className="text-[10px] text-[#8B949E]">Updating news feed...</div>}
  </DataWorkspace>
 }
 
 export function AnalyticsView(){
+ const sectorPerformance:[string,number][]=[['Banking',1.42],['Auto',1.18],['IT',.64],['Energy',.51],['FMCG',-.28],['Pharma',-.46],['Metal',-.72],['Realty',-1.05]];
  return <DataWorkspace title="Analytics" subtitle="Market breadth, momentum and performance analytics" stats={[['Advancers','1,482'],['Decliners','936'],['New Highs','118'],['New Lows','47']]}>
   <div className="grid gap-3 lg:grid-cols-3"><Panel title="Market Breadth"><div className="p-4"><div className="num text-3xl">1.58</div><div className="mt-1 text-xs text-[#8B949E]">Advance / decline ratio</div><div className="mt-5 h-3 bg-[#F85149]"><div className="h-full bg-[#2EA043]" style={{width:'61%'}}/></div><div className="mt-2 flex justify-between text-[10px] text-[#8B949E]"><span>1,482 Adv</span><span>936 Dec</span></div></div></Panel><Panel title="Momentum Leaders"><div className="divide-y divide-[#21262D]">{stocks.slice(0,5).map((s,i)=><div key={s[0]} className="flex items-center p-3"><span className="w-5 num text-[#8B949E]">{i+1}</span><span className="flex-1">{s[0]}</span><span className="num text-[#2EA043]">{s[3]}</span><MiniSpark/></div>)}</div></Panel><Panel title="Volatility"><div className="space-y-4 p-4">{[['India VIX','13.42','-3.8%'],['NIFTY ATR','118.6','+4.2%'],['BANKNIFTY ATR','284.3','+6.1%'],['Put/Call OI','1.08','+0.04']].map(x=><div key={x[0]} className="flex justify-between border-b border-[#21262D] pb-3"><span className="text-xs text-[#8B949E]">{x[0]}</span><span className="num">{x[1]} <span className="ml-2 text-[#8B949E]">{x[2]}</span></span></div>)}</div></Panel></div>
-  <Panel title="Sector Performance"><div className="grid gap-2 p-3 md:grid-cols-2">{[['Banking',1.42],['Auto',1.18],['IT',.64],['Energy',.51],['FMCG',-.28],['Pharma',-.46],['Metal',-.72],['Realty',-1.05]].map(x=><div key={x[0]} className="flex items-center gap-3"><span className="w-20 text-xs">{x[0]}</span><div className="h-5 flex-1 bg-[#21262D]"><div className={`h-full ${x[1]>=0?'bg-[#2EA043]':'bg-[#F85149]'}`} style={{width:`${Math.min(100,Math.abs(x[1])*45)}%`}}/></div><span className={`num w-16 text-right ${x[1]>=0?'text-[#2EA043]':'text-[#F85149]'}`}>{x[1]>=0?'+':''}{x[1].toFixed(2)}%</span></div>)}</div></Panel>
+  <Panel title="Sector Performance"><div className="grid gap-2 p-3 md:grid-cols-2">{sectorPerformance.map(x=><div key={x[0]} className="flex items-center gap-3"><span className="w-20 text-xs">{x[0]}</span><div className="h-5 flex-1 bg-[#21262D]"><div className={`h-full ${x[1]>=0?'bg-[#2EA043]':'bg-[#F85149]'}`} style={{width:`${Math.min(100,Math.abs(x[1])*45)}%`}}/></div><span className={`num w-16 text-right ${x[1]>=0?'text-[#2EA043]':'text-[#F85149]'}`}>{x[1]>=0?'+':''}{x[1].toFixed(2)}%</span></div>)}</div></Panel>
  </DataWorkspace>
 }
 

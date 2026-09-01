@@ -62,9 +62,9 @@ function MiniSpark({positive=true}:{positive?:boolean}) {
   return <svg viewBox="0 0 100 44" className="h-10 w-24"><polyline points={pts} fill="none" stroke={positive?'#2EA043':'#F85149'} strokeWidth="2"/></svg>
 }
 
-export function DataWorkspace({title, subtitle, children, stats}:{title:string,subtitle?:string,children:ReactNode,stats?:[string,string,string?][]}) {
+export function DataWorkspace({title, subtitle, children, stats, actions}:{title:string,subtitle?:string,children:ReactNode,stats?:[string,string,string?][],actions?:ReactNode}) {
  return <div className="space-y-3">
-  <div className="flex flex-wrap items-end justify-between gap-2"><div><h1 className="text-lg font-semibold">{title}</h1>{subtitle&&<p className="mt-0.5 text-xs text-[#8B949E]">{subtitle}</p>}</div><div className="flex gap-2"><button className="flex h-8 items-center gap-2 border border-[#30363D] bg-[#161B22] px-3 text-xs text-[#8B949E] hover:text-white"><RefreshCw className="h-3.5 w-3.5"/>Refresh</button><button className="flex h-8 items-center gap-2 bg-[#2EA043] px-3 text-xs font-semibold"><Plus className="h-3.5 w-3.5"/>Create</button></div></div>
+  <div className="flex flex-wrap items-end justify-between gap-2"><div><h1 className="text-lg font-semibold">{title}</h1>{subtitle&&<p className="mt-0.5 text-xs text-[#8B949E]">{subtitle}</p>}</div>{actions||<div className="flex gap-2"><button className="flex h-8 items-center gap-2 border border-[#30363D] bg-[#161B22] px-3 text-xs text-[#8B949E] hover:text-white"><RefreshCw className="h-3.5 w-3.5"/>Refresh</button><button className="flex h-8 items-center gap-2 bg-[#2EA043] px-3 text-xs font-semibold"><Plus className="h-3.5 w-3.5"/>Create</button></div>}</div>
   {stats&&<HeaderStats items={stats}/>}
   {children}
  </div>
@@ -125,9 +125,9 @@ export function NewsView(){
  const [data,setData]=useState<NewsResponse>(newsFallback);
  const [loading,setLoading]=useState(false);
  const [error,setError]=useState<string|null>(null);
- const loadNews=async()=>{
+ const loadNews=async(forceRefresh=false)=>{
   setLoading(true); setError(null);
-  try { setData(await fetchNews()); }
+  try { setData(await fetchNews(undefined, forceRefresh)); }
   catch { setError('Live feed unavailable; showing the latest cached demo feed.'); }
   finally { setLoading(false); }
  };
@@ -135,12 +135,14 @@ export function NewsView(){
  const filtered=data.items.filter(item=>categoryMatches(filter,item));
  const formatTime=(value:string)=>new Intl.DateTimeFormat('en-IN',{hour:'2-digit',minute:'2-digit',hour12:false}).format(new Date(value));
  const stats:[string,string][]=[['Headlines',String(data.stats.headlines)],['High Impact',String(data.stats.highImpact)],['Positive',String(data.stats.positive)],['Neutral',String(data.stats.neutral)]];
- return <DataWorkspace title="Market News" subtitle="Live market headlines and event context" stats={stats}>
+ const sourceLabel=data.sources?.news?.join(' + ') || 'fallback';
+ const refreshButton=<button onClick={()=>void loadNews(true)} disabled={loading} className="flex h-8 items-center gap-2 border border-[#30363D] bg-[#161B22] px-3 text-xs text-[#8B949E] hover:text-white disabled:cursor-not-allowed disabled:opacity-60"><RefreshCw className={`h-3.5 w-3.5 ${loading?'animate-spin':''}`}/>Refresh</button>;
+ return <DataWorkspace title="Market News" subtitle="Live market headlines and event context" stats={stats} actions={<div className="flex gap-2">{refreshButton}</div>}>
   <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_300px]">
    <Panel title="News Feed"><div className="flex gap-1 border-b border-[#21262D] p-2">{['ALL','MARKET','POLICY','GLOBAL','SECTOR','F&O'].map(x=><button onClick={()=>setFilter(x as NewsCategory|'ALL')} key={x} className={`px-3 py-1.5 text-[10px] ${filter===x?'bg-[#2EA043] text-white':'text-[#8B949E] hover:bg-[#21262D]'}`}>{x}</button>)}</div>{error&&<div className="border-b border-[#21262D] px-3 py-2 text-[10px] text-[#D29922]">{error}</div>}<div className="divide-y divide-[#21262D]">{filtered.map((item:NewsItem)=><article key={item.id} className="p-3 hover:bg-[#1c2229]"><div className="flex items-center gap-2 text-[10px] text-[#8B949E]"><span className="num">{formatTime(item.publishedAt)}</span><span>·</span><span>{item.category}</span><span className={`ml-auto ${item.sentiment==='POSITIVE'?'text-[#2EA043]':item.sentiment==='NEGATIVE'?'text-[#F85149]':'text-[#8B949E]'}`}>{item.sentiment[0]+item.sentiment.slice(1).toLowerCase()}</span></div><a href={item.sourceUrl} target="_blank" rel="noreferrer" className="mt-1 block text-sm hover:text-[#2EA043]">{item.title}</a><div className="mt-2 text-[10px] text-[#8B949E]">Source: {item.source}</div></article>)}{!filtered.length&&<div className="p-6 text-center text-xs text-[#8B949E]">No headlines in this section.</div>}</div></Panel>
-   <Panel title="Market Events"><div className="space-y-3 p-3">{data.events.map(event=><div key={event.id} className="flex gap-3 border-b border-[#21262D] pb-3 last:border-0"><Clock3 className="mt-0.5 h-4 w-4 text-[#8B949E]"/><div><div className="num text-xs">{formatTime(event.eventAt)}</div><div className="text-xs">{event.title}</div><div className="text-[9px] text-[#8B949E]">{event.impact[0]+event.impact.slice(1).toLowerCase()} impact</div></div></div>)}{!data.events.length&&<div className="text-xs text-[#8B949E]">No upcoming events.</div>}</div></Panel>
+   <Panel title="Market Events"><div className="space-y-3 p-3">{data.events.map(event=><div key={event.id} className="flex gap-3 border-b border-[#21262D] pb-3 last:border-0"><Clock3 className="mt-0.5 h-4 w-4 text-[#8B949E]"/><div><div className="num text-xs">{formatTime(event.eventAt)}</div><div className="text-xs">{event.title}</div><div className="text-[9px] text-[#8B949E]">{[event.symbol,event.category].filter(Boolean).join(' · ')}{event.symbol||event.category?' · ':''}{event.impact[0]+event.impact.slice(1).toLowerCase()} impact</div></div></div>)}{!data.events.length&&<div className="text-xs text-[#8B949E]">No upcoming events.</div>}</div></Panel>
   </div>
-  {loading&&<div className="text-[10px] text-[#8B949E]">Updating news feed...</div>}
+  <div className="flex justify-between text-[10px] text-[#8B949E]"><span>Feed: {sourceLabel}{data.stale?' · stale':''}</span><span>{loading?'Updating news feed...':`Updated ${formatTime(data.fetchedAt)}`}</span></div>
  </DataWorkspace>
 }
 

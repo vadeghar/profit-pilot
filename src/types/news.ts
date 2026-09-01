@@ -22,6 +22,9 @@ export type MarketEvent = {
   timezone: string;
   title: string;
   country?: string;
+  category?: string;
+  symbol?: string;
+  fiscalPeriod?: string;
   impact: NewsImpact;
   status: 'UPCOMING' | 'RELEASED' | 'CANCELLED';
   actual?: string;
@@ -34,4 +37,7 @@ export type NewsResponse = {
   events: MarketEvent[];
   stats: { headlines: number; highImpact: number; positive: number; neutral: number };
   fetchedAt: string;
+  sources?: { news: string[]; events: string[] };
+  stale?: boolean;
+  errors?: string[];
 };

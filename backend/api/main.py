@@ -15,13 +15,18 @@ Only Blaze Butterfly is wired up for now -- add entries to STRATEGIES
 as Strategies 1-3 get implemented the same way.
 """
 from datetime import date, datetime
+from pathlib import Path
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 from backtest.engine import run_backtest
 from strategies.blaze_butterfly import BlazeButterflyStrategy
+from news.models import NewsResponse
 from news.service import get_news
+
+load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 app = FastAPI(title="Profit Pilot API")
 
@@ -62,7 +67,7 @@ def list_strategies():
     return cards
 
 
-@app.get("/api/news")
+@app.get("/api/news", response_model=NewsResponse, response_model_by_alias=True)
 def news(force_refresh: bool = Query(False)):
     try:
         return get_news(force_refresh=force_refresh)

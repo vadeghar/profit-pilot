@@ -9,18 +9,25 @@ Endpoints:
         -> list of strategies with cached/last-run backtest summary,
            shaped to match what StrategyView.tsx renders as cards.
     GET /api/strategies/{strategy_id}/backtest?start=YYYY-MM-DD&end=YYYY-MM-DD
-        -> run (or re-run) a backtest and return full trade list + equity curve.
+        -> run a backtest synchronously and return full trade list + equity curve.
+    GET /api/strategies/{strategy_id}/backtest/stream?start=...&end=...
+        -> Server-Sent Events: one "trade" event per completed trade (with
+           running totals), then a final "done" event. Use this from the UI
+           instead of the endpoint above so results appear as they're found
+           rather than after the whole backtest finishes.
 
 Only Blaze Butterfly is wired up for now -- add entries to STRATEGIES
 as Strategies 1-3 get implemented the same way.
 """
+import json
 import logging
 from datetime import date, datetime
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 
-from backtest.engine import run_backtest
+from backtest.engine import BacktestSummary, iter_trades, run_backtest
 from strategies.blaze_butterfly import BlazeButterflyStrategy
 
 # Surfaces per-Monday diagnostic warnings from strategies/blaze_butterfly.py
@@ -58,6 +65,18 @@ def _summary_card(strategy_id: str, strategy, summary) -> dict:
     }
 
 
+def _trade_payload(t) -> dict:
+    return {
+        "entry_time": t.entry_time.isoformat(),
+        "exit_time": t.exit_time.isoformat(),
+        "reference_atm": t.reference_atm,
+        "legs": t.legs,
+        "exit_reason": t.exit_reason,
+        "pnl": t.pnl,
+        "pnl_pct": t.pnl_pct,
+    }
+
+
 @app.get("/api/strategies")
 def list_strategies():
     cards = []
@@ -87,16 +106,44 @@ def backtest_strategy(
         "win_rate": round(summary.win_rate, 2),
         "total_pnl": round(summary.total_pnl, 2),
         "equity_curve": summary.equity_curve,
-        "trades": [
-            {
-                "entry_time": t.entry_time.isoformat(),
-                "exit_time": t.exit_time.isoformat(),
-                "reference_atm": t.reference_atm,
-                "legs": t.legs,
-                "exit_reason": t.exit_reason,
-                "pnl": t.pnl,
-                "pnl_pct": t.pnl_pct,
-            }
-            for t in summary.trades
-        ],
+        "trades": [_trade_payload(t) for t in summary.trades],
     }
+
+
+@app.get("/api/strategies/{strategy_id}/backtest/stream")
+def backtest_strategy_stream(
+    strategy_id: str,
+    start: date = Query(..., description="YYYY-MM-DD"),
+    end: date = Query(..., description="YYYY-MM-DD"),
+):
+    strat = STRATEGIES.get(strategy_id)
+    if strat is None:
+        raise HTTPException(404, f"Unknown strategy '{strategy_id}'")
+
+    def event_stream():
+        trades = []
+        for t in iter_trades(strat, start, end):
+            trades.append(t)
+            wins = sum(1 for x in trades if x.pnl > 0)
+            payload = {
+                **_trade_payload(t),
+                "running_trade_count": len(trades),
+                "running_pnl": round(sum(x.pnl for x in trades), 2),
+                "running_win_rate": round(wins / len(trades) * 100, 2),
+            }
+            yield f"event: trade\ndata: {json.dumps(payload)}\n\n"
+
+        summary = BacktestSummary(strategy_name=strat.name, trades=trades)
+        _last_summary[strategy_id] = {"summary": summary, "run_at": datetime.utcnow()}
+        done_payload = {
+            "total_trades": summary.total_trades,
+            "win_rate": round(summary.win_rate, 2),
+            "total_pnl": round(summary.total_pnl, 2),
+        }
+        yield f"event: done\ndata: {json.dumps(done_payload)}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )

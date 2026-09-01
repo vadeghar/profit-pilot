@@ -21,6 +21,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from backtest.engine import run_backtest
 from strategies.blaze_butterfly import BlazeButterflyStrategy
+from news.service import get_news
 
 app = FastAPI(title="Profit Pilot API")
 
@@ -59,6 +60,14 @@ def list_strategies():
         cached = _last_summary.get(sid)
         cards.append(_summary_card(sid, strat, cached["summary"] if cached else None))
     return cards
+
+
+@app.get("/api/news")
+def news(force_refresh: bool = Query(False)):
+    try:
+        return get_news(force_refresh=force_refresh)
+    except RuntimeError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
 
 
 @app.get("/api/strategies/{strategy_id}/backtest")

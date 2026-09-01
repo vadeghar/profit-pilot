@@ -5,10 +5,9 @@ import { WebSocketProvider } from './context/WebSocketContext';
 import { WatchlistsView } from './views/WatchlistsView';
 import { OrderTicketView } from './views/OrderTicketView';
 import { DashboardView } from './views/DashboardView';
-import { StrategyView } from './views/StrategyView';
 import {
   WatchlistsMockView, OrderBooksView, PortfolioView, PositionsView, AlertsView,
-  HistoryView, NewsView, AnalyticsView, ToolsView, SettingsView,
+  HistoryView, StrategyView, NewsView, AnalyticsView, ToolsView, SettingsView,
   OptionsView, SpotTradingView, AlgoOrdersView, PerpetualsView, FuturesView, DerivativesView
 } from './views/MockWorkspaces';
 

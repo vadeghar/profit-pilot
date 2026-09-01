@@ -1,5 +1,5 @@
 import express from 'express';
-import { StreamableHttpServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { spawn } from 'child_process';
 
 const app = express();
@@ -17,7 +17,7 @@ app.all('/mcp', async (req, res) => {
     stdio: ['pipe', 'pipe', 'inherit']
   });
 
-  const transport = new StreamableHttpServerTransport(req, res);
+  const transport = new StreamableHTTPServerTransport(req, res);
   
   // Connect MCP SDK transport to GitHub binary stdio
   mcpProcess.stdout.pipe(transport.outboundStream);

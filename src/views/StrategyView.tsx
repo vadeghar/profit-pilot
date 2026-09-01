@@ -61,7 +61,7 @@ export function StrategyView() {
           money(strategies.reduce((sum, s) => sum + (s.pnl ?? 0), 0)),
         ],
       ]
-    : undefined;
+    : [];
 
   return (
     <DataWorkspace title="Strategy Builder" subtitle="Backtest and deploy rule-based strategies" stats={stats}>

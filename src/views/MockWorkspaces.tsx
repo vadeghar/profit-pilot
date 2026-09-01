@@ -120,14 +120,6 @@ export function HistoryView(){
  </DataWorkspace>
 }
 
-export function StrategyView(){
- const strategies=[['RSI Momentum','NIFTY 50 · 5m','LIVE','68.4%','+₹ 42,680','24'],['VWAP Reversion','BANKNIFTY · 1m','PAUSED','61.2%','+₹ 18,420','17'],['Opening Range Breakout','NIFTY Options · 5m','BACKTEST','64.8%','+₹ 76,240','31']];
- return <DataWorkspace title="Strategy Builder" subtitle="Design, test and deploy rule-based strategies" stats={[['Strategies','12'],['Live','3'],['Backtests','84'],['Net Strategy P&L','+₹ 1.82L']]}>
-  <div className="grid gap-3 lg:grid-cols-3">{strategies.map(s=><Panel key={s[0]} title={s[0]}><div className="p-4"><div className="text-xs text-[#8B949E]">{s[1]}</div><div className="mt-3 flex items-center justify-between"><span className={`text-[10px] font-semibold ${s[2]==='LIVE'?'text-[#2EA043]':'text-[#8B949E]'}`}>{s[2]}</span><span className="num text-lg">{s[3]}</span></div><div className="mt-3 grid grid-cols-2 gap-2 text-xs"><div className="border border-[#21262D] p-2"><div className="text-[9px] text-[#8B949E]">P&L</div><div className="num text-[#2EA043]">{s[4]}</div></div><div className="border border-[#21262D] p-2"><div className="text-[9px] text-[#8B949E]">TRADES</div><div className="num">{s[5]}</div></div></div><button className="mt-3 flex h-8 w-full items-center justify-center gap-2 border border-[#30363D] text-xs hover:bg-[#21262D]"><Play className="h-3.5 w-3.5"/>Open Strategy</button></div></Panel>)}</div>
-  <Panel title="Strategy Performance"><div className="p-4"><div className="flex h-44 items-end gap-2">{[25,38,32,48,42,57,63,59,72,66,82,91,87,96,100].map((v,i)=><div key={i} className="flex-1 bg-[#2EA043]" style={{height:`${v}%`,opacity:.45+i/35}} title={`Day ${i+1}`}/>)}</div><div className="mt-2 flex justify-between text-[10px] text-[#8B949E]"><span>D-15</span><span>D-7</span><span>Today</span></div></div></Panel>
- </DataWorkspace>
-}
-
 export function NewsView(){
  const [filter,setFilter]=useState('ALL');
  const filtered=news.filter(x=>filter==='ALL'||x[1]===filter);

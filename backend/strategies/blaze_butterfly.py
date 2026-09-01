@@ -34,7 +34,9 @@ def reference_atm(spot: float) -> float:
 
 class BlazeButterflyStrategy(OptionsStrategy):
     name = "NIFTY Blaze Butterfly"
-    underlying = "NIFTY"
+    # NOTE: this must match instruments.underlying_symbol exactly -- in this
+    # DB the NIFTY index/options rows are tagged 'NIFTY 50', not 'NIFTY'.
+    underlying = "NIFTY 50"
 
     def __init__(self, margin_per_unit: float = 85_000, units: int = 1,
                  target_pct: float = 1.0, stop_pct: float = 1.0):

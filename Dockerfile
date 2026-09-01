@@ -8,5 +8,5 @@ RUN npm install -g mcp-proxy @modelcontextprotocol/server-github
 EXPOSE 8080
 ENV PORT=8080
 
-# Configure mcp-proxy with explicit port binding
-CMD ["mcp-proxy", "--port", "8080", "--command", "mcp-server-github"]
+# Map the proxy endpoint to root '/' for both Streamable HTTP and SSE
+CMD ["mcp-proxy", "--port", "8080", "--endpoint", "/", "--command", "mcp-server-github"]

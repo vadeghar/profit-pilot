@@ -14,6 +14,7 @@ Endpoints:
 Only Blaze Butterfly is wired up for now -- add entries to STRATEGIES
 as Strategies 1-3 get implemented the same way.
 """
+import logging
 from datetime import date, datetime
 
 from fastapi import FastAPI, HTTPException, Query
@@ -21,6 +22,11 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from backtest.engine import run_backtest
 from strategies.blaze_butterfly import BlazeButterflyStrategy
+
+# Surfaces per-Monday diagnostic warnings from strategies/blaze_butterfly.py
+# and backtest/engine.py in the uvicorn console -- look here first if a
+# backtest comes back with 0 trades.
+logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
 app = FastAPI(title="Profit Pilot API")
 

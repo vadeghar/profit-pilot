@@ -11,6 +11,7 @@ The implementation follows the supplied transcript:
 import logging
 import math
 from datetime import date, datetime, time, timedelta
+from zoneinfo import ZoneInfo
 from typing import Optional
 
 from db import repository as repo
@@ -27,6 +28,15 @@ WING_DISTANCE = 100
 EXTRA_CALL_DISTANCE = 300
 DEFAULT_LOT_SIZE_AFTER_2026 = 65
 DEFAULT_LOT_SIZE_BEFORE_2026 = 75
+MARKET_TIMEZONE = ZoneInfo("Asia/Kolkata")
+
+
+def _local_bar_time(bar_time: datetime) -> datetime:
+    """Compare database bars in the market timezone regardless of DB timezone."""
+    value = bar_time.to_pydatetime() if hasattr(bar_time, "to_pydatetime") else bar_time
+    if value.tzinfo is None or value.utcoffset() is None:
+        return value
+    return value.astimezone(MARKET_TIMEZONE).replace(tzinfo=None)
 
 
 def _nearest_hundred(value: float) -> int:
@@ -168,6 +178,6 @@ class TitanCondorStrategy(OptionsStrategy):
         time_exit = datetime.combine(
             position.entry_time.date() + timedelta(days=7), TIME_EXIT
         )
-        if bar_time >= time_exit:
+        if _local_bar_time(bar_time) >= time_exit:
             return ExitReason.EARLY_CUT
         return None

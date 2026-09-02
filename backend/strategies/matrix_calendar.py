@@ -31,6 +31,9 @@ WEEKLY_HEDGE_DISTANCE = 500
 ALLOWED_STRIKE_STEP = 100
 MAX_CANDLE_STALENESS_MINUTES = 10
 TRADING_DAYS_HOLD = 2
+LOT_SIZE_CHANGE_DATE = date(2026, 1, 1)
+CURRENT_DEFAULT_LOT_SIZE = 65
+LEGACY_DEFAULT_LOT_SIZE = 75
 
 
 class MatrixCalendarStrategy(OptionsStrategy):
@@ -81,6 +84,13 @@ class MatrixCalendarStrategy(OptionsStrategy):
             entry_time = entry_time.replace(tzinfo=None)
         return (entry_time - candle_time).total_seconds() / 60.0
 
+    @staticmethod
+    def _lot_size(contract: dict[str, Any], expiry: date) -> int:
+        stored = contract.get("lot_size")
+        if stored not in (None, 0, ""):
+            return int(stored)
+        return CURRENT_DEFAULT_LOT_SIZE if expiry >= LOT_SIZE_CHANGE_DATE else LEGACY_DEFAULT_LOT_SIZE
+
     def _candidate(
         self,
         chain: list[dict[str, Any]],
@@ -127,13 +137,14 @@ class MatrixCalendarStrategy(OptionsStrategy):
             candidates.append((abs(abs(delta) - TARGET_DELTA), {**row, "iv": iv, "delta": delta}))
         return min(candidates, key=lambda item: item[0])[1] if candidates else None
 
-    @staticmethod
     def _append_leg(
+        self,
         legs: list[Leg],
         contract: dict[str, Any],
         option_type: str,
         side: str,
         qty_lots: int,
+        expiry: date,
     ) -> None:
         legs.append(
             Leg(
@@ -143,7 +154,7 @@ class MatrixCalendarStrategy(OptionsStrategy):
                 option_type=option_type,
                 side=side,
                 qty_lots=qty_lots,
-                lot_size=int(contract["lot_size"]),
+                lot_size=self._lot_size(contract, expiry),
                 entry_price=float(contract["close"]),
             )
         )
@@ -188,12 +199,12 @@ class MatrixCalendarStrategy(OptionsStrategy):
 
         qty = self.units
         legs: list[Leg] = []
-        self._append_leg(legs, call, "CE", "SELL", 2 * qty)
-        self._append_leg(legs, put, "PE", "SELL", 2 * qty)
-        self._append_leg(legs, call_hedge, "CE", "BUY", qty)
-        self._append_leg(legs, put_hedge, "PE", "BUY", qty)
-        self._append_leg(legs, monthly_call, "CE", "BUY", qty)
-        self._append_leg(legs, monthly_put, "PE", "BUY", qty)
+        self._append_leg(legs, call, "CE", "SELL", 2 * qty, weekly_expiry)
+        self._append_leg(legs, put, "PE", "SELL", 2 * qty, weekly_expiry)
+        self._append_leg(legs, call_hedge, "CE", "BUY", qty, weekly_expiry)
+        self._append_leg(legs, put_hedge, "PE", "BUY", qty, weekly_expiry)
+        self._append_leg(legs, monthly_call, "CE", "BUY", qty, monthly_expiry)
+        self._append_leg(legs, monthly_put, "PE", "BUY", qty, monthly_expiry)
 
         return Position(
             entry_time=entry_time,

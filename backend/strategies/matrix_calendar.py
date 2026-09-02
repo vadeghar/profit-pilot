@@ -26,6 +26,7 @@ ENTRY_TIME = time(15, 16)
 TARGET_PCT = 1.5
 STOP_PCT = 2.0
 TARGET_DELTA = 0.23
+MIN_IV = 0.20
 WEEKLY_HEDGE_DISTANCE = 500
 ALLOWED_STRIKE_STEP = 100
 MAX_CANDLE_STALENESS_MINUTES = 10
@@ -43,6 +44,7 @@ class MatrixCalendarStrategy(OptionsStrategy):
         units: int = 1,
         target_pct: float = TARGET_PCT,
         stop_pct: float = STOP_PCT,
+        min_iv: float = MIN_IV,
         risk_free_rate: float = 0.06,
         dividend_yield: float = 0.012,
     ):
@@ -52,6 +54,7 @@ class MatrixCalendarStrategy(OptionsStrategy):
         self.units = units
         self.target_pct = target_pct
         self.stop_pct = stop_pct
+        self.min_iv = min_iv
         self.risk_free_rate = risk_free_rate
         self.dividend_yield = dividend_yield
 
@@ -101,7 +104,7 @@ class MatrixCalendarStrategy(OptionsStrategy):
                 self.dividend_yield,
                 option_type,
             )
-            if iv is None:
+            if iv is None or iv < self.min_iv:
                 continue
             delta = option_delta(
                 spot,
@@ -153,7 +156,7 @@ class MatrixCalendarStrategy(OptionsStrategy):
         call = self._candidate(chain, "CE", spot, time_years, entry_time)
         put = self._candidate(chain, "PE", spot, time_years, entry_time)
         if call is None or put is None:
-            logger.warning("[%s] Matrix Calendar skipped: no valid ~23-delta CE/PE pair", entry_date)
+            logger.warning("[%s] Matrix Calendar skipped: no valid high-IV ~23-delta CE/PE pair", entry_date)
             return None
 
         call_hedge = get_option_contract(

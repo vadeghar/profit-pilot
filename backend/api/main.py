@@ -12,12 +12,7 @@ Endpoints:
         -> run a backtest synchronously and return full trade list + equity curve.
     GET /api/strategies/{strategy_id}/backtest/stream?start=...&end=...
         -> Server-Sent Events: one "trade" event per completed trade (with
-           running totals), then a final "done" event. Use this from the UI
-           instead of the endpoint above so results appear as they're found
-           rather than after the whole backtest finishes.
-
-Only Blaze Butterfly is wired up for now -- add entries to STRATEGIES
-as Strategies 1-3 get implemented the same way.
+           running totals), then a final "done" event.
 """
 import json
 import logging
@@ -31,31 +26,28 @@ from fastapi.responses import StreamingResponse
 
 from backtest.engine import BacktestSummary, iter_trades, run_backtest
 from strategies.blaze_butterfly import BlazeButterflyStrategy
+from strategies.matrix_calendar import MatrixCalendarStrategy
 from news.models import NewsResponse
 from news.service import get_news
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
-# Surfaces per-Monday diagnostic warnings from strategies/blaze_butterfly.py
-# and backtest/engine.py in the uvicorn console -- look here first if a
-# backtest comes back with 0 trades.
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
 app = FastAPI(title="Profit Pilot API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],  # vite dev server; add prod origin later
+    allow_origins=["http://localhost:5173"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 STRATEGIES = {
     "blaze-butterfly": BlazeButterflyStrategy(),
+    "matrix-calendar": MatrixCalendarStrategy(),
 }
 
-# In-memory cache of the last backtest run per strategy, so the list
-# endpoint doesn't re-run a backtest on every page load.
 _last_summary: dict[str, dict] = {}
 
 

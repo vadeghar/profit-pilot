@@ -35,6 +35,7 @@ from fastapi.responses import StreamingResponse
 
 from backtest.engine import BacktestSummary, iter_trades, run_backtest
 from strategies.blaze_butterfly import BlazeButterflyStrategy
+from strategies.titan_condor import TitanCondorStrategy
 from news.models import NewsResponse
 from news.service import get_news
 from analytics.models import AnalyticsSnapshot
@@ -60,6 +61,7 @@ app.add_middleware(
 
 STRATEGIES = {
     "blaze-butterfly": BlazeButterflyStrategy(),
+    "titan-condor": TitanCondorStrategy(),
 }
 
 # In-memory cache of the last backtest run per strategy, so the list

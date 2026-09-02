@@ -18,10 +18,6 @@ type StrategyCard = {
 
 const money = (v: number) => `${v >= 0 ? '+' : ''}₹ ${v.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
-// Last ~6 months, computed once per mount so the modal's EventSource URL stays stable.
-const BACKTEST_END = new Date().toISOString().slice(0, 10);
-const BACKTEST_START = new Date(Date.now() - 1000 * 60 * 60 * 24 * 180).toISOString().slice(0, 10);
-
 export function StrategyView() {
   const [strategies, setStrategies] = useState<StrategyCard[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -96,7 +92,7 @@ export function StrategyView() {
                   className="mt-3 flex h-8 w-full items-center justify-center gap-2 border border-[#30363D] text-xs hover:bg-[#21262D]"
                 >
                   <Play className="h-3.5 w-3.5" />
-                  Run Backtest (6M)
+                  Run Backtest
                 </button>
               </div>
             </Panel>
@@ -108,8 +104,6 @@ export function StrategyView() {
         <BacktestModal
           strategyId={activeBacktest.id}
           strategyName={activeBacktest.name}
-          start={BACKTEST_START}
-          end={BACKTEST_END}
           onClose={() => setActiveBacktest(null)}
           onComplete={loadStrategies}
         />

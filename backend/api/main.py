@@ -16,6 +16,7 @@ Endpoints:
 """
 import json
 import logging
+import os
 from datetime import date, datetime
 from pathlib import Path
 
@@ -43,9 +44,28 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    return default if raw in (None, "") else float(raw)
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    return default if raw in (None, "") else int(raw)
+
+
 STRATEGIES = {
     "blaze-butterfly": BlazeButterflyStrategy(),
-    "matrix-calendar": MatrixCalendarStrategy(),
+    "matrix-calendar": MatrixCalendarStrategy(
+        margin_per_unit=_env_float("MATRIX_CALENDAR_MARGIN_PER_UNIT", 100_000),
+        units=_env_int("MATRIX_CALENDAR_UNITS", 1),
+        target_pct=_env_float("MATRIX_CALENDAR_TARGET_PCT", 1.5),
+        stop_pct=_env_float("MATRIX_CALENDAR_STOP_PCT", 2.0),
+        min_iv=_env_float("MATRIX_CALENDAR_MIN_IV", 0.20),
+        risk_free_rate=_env_float("MATRIX_CALENDAR_RISK_FREE_RATE", 0.06),
+        dividend_yield=_env_float("MATRIX_CALENDAR_DIVIDEND_YIELD", 0.012),
+    ),
 }
 
 _last_summary: dict[str, dict] = {}

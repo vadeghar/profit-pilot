@@ -72,6 +72,15 @@ class MatrixCalendarStrategy(OptionsStrategy):
         expiry_close = datetime.combine(expiry, time(15, 30))
         return max((expiry_close - entry_time).total_seconds(), 0.0) / (365.0 * 24 * 60 * 60)
 
+    @staticmethod
+    def _minutes_since(entry_time: datetime, candle_time: datetime) -> float:
+        """Compare DB timestamps safely when one side carries timezone info."""
+        if entry_time.tzinfo is None and candle_time.tzinfo is not None:
+            candle_time = candle_time.replace(tzinfo=None)
+        elif entry_time.tzinfo is not None and candle_time.tzinfo is None:
+            entry_time = entry_time.replace(tzinfo=None)
+        return (entry_time - candle_time).total_seconds() / 60.0
+
     def _candidate(
         self,
         chain: list[dict[str, Any]],
@@ -92,7 +101,7 @@ class MatrixCalendarStrategy(OptionsStrategy):
             if option_type == "PE" and strike >= spot:
                 continue
             candle_ts = row["candle_ts"]
-            if candle_ts is None or entry_time - candle_ts > timedelta(minutes=MAX_CANDLE_STALENESS_MINUTES):
+            if candle_ts is None or self._minutes_since(entry_time, candle_ts) > MAX_CANDLE_STALENESS_MINUTES:
                 continue
             price = float(row["close"])
             iv = implied_volatility(

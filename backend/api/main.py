@@ -61,7 +61,12 @@ app.add_middleware(
 
 STRATEGIES = {
     "blaze-butterfly": BlazeButterflyStrategy(),
-    "titan-condor": TitanCondorStrategy(),
+    "titan-condor": TitanCondorStrategy(
+        units=int(os.getenv("TITAN_CONDOR_UNITS", "10")),
+        margin_per_lot=float(os.getenv("TITAN_CONDOR_MARGIN_PER_LOT", "30000")),
+        target_pct=float(os.getenv("TITAN_CONDOR_TARGET_PCT", "1.0")),
+        extra_call_lots=int(os.getenv("TITAN_CONDOR_EXTRA_CALL_LOTS", "1")),
+    ),
 }
 
 # In-memory cache of the last backtest run per strategy, so the list

@@ -21,11 +21,15 @@ as Strategies 1-3 get implemented the same way.
 """
 import json
 import logging
+import asyncio
+import os
+import queue
+import threading
 from datetime import date, datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
@@ -33,6 +37,10 @@ from backtest.engine import BacktestSummary, iter_trades, run_backtest
 from strategies.blaze_butterfly import BlazeButterflyStrategy
 from news.models import NewsResponse
 from news.service import get_news
+from analytics.models import AnalyticsSnapshot
+from analytics.service import _nse_snapshot, get_analytics
+from analytics.sources.nse_client import fetch_market_data as fetch_nse_data
+from analytics.sources.nse_client import _market_client as nse_market_client
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
@@ -98,6 +106,87 @@ def news(force_refresh: bool = Query(False)):
         return get_news(force_refresh=force_refresh)
     except RuntimeError as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
+
+
+@app.get("/api/analytics", response_model=AnalyticsSnapshot, response_model_by_alias=True)
+def analytics(force_refresh: bool = Query(False)):
+    return get_analytics(force_refresh=force_refresh).model_dump(by_alias=True)
+
+
+@app.get("/api/analytics/card/{card}")
+def analytics_card(card: str):
+    if card not in {"summary", "breadth", "momentumLeaders", "volatility", "marketCards", "activeContracts"}:
+        raise HTTPException(status_code=404, detail="Analytics card not found")
+    snapshot = _nse_snapshot(nse_market_client.fetch_card_data(card)).model_dump(by_alias=True)
+    return {"card": card, "data": snapshot[card], "meta": snapshot["meta"]}
+
+
+@app.get("/api/analytics/stream")
+async def analytics_stream(request: Request, force_refresh: bool = Query(False)):
+    def _stream_nse_data():
+        updates: queue.Queue[tuple[str, object]] = queue.Queue()
+
+        def on_result(name, value):
+            updates.put((name, value))
+
+        worker = threading.Thread(target=lambda: fetch_nse_data(on_result=on_result), daemon=True)
+        worker.start()
+        return updates, worker
+
+    def _card_events(snapshot, cards):
+        for card in cards:
+            payload = {"card": card, "data": snapshot[card], "meta": snapshot["meta"]}
+            yield f"event: {card}\ndata: {json.dumps(payload, default=str)}\n\n"
+
+    async def event_stream():
+        interval = max(5, float(os.getenv("ANALYTICS_STREAM_INTERVAL_SECONDS", "15")))
+        refresh = force_refresh
+        try:
+            while not await request.is_disconnected():
+                yield "event: snapshot_start\ndata: {}\n\n"
+                updates, worker = _stream_nse_data()
+                partial = {}
+                mapping = {
+                    "statistics": ("summary", "breadth"),
+                    "indices": ("volatility",),
+                    "marquee": ("momentumLeaders",),
+                    "gainers": ("marketCards",), "losers": ("marketCards",),
+                    "activeValue": ("marketCards",), "activeVolume": ("marketCards",),
+                    "newHighs": ("summary", "marketCards"), "newLows": ("summary", "marketCards"),
+                }
+                while worker.is_alive() or not updates.empty():
+                    try:
+                        name, value = await asyncio.to_thread(updates.get, True, 0.25)
+                    except queue.Empty:
+                        continue
+                    if name == "complete":
+                        partial = value
+                        continue
+                    partial[name] = value
+                    cards = mapping.get(name, ())
+                    if cards:
+                        snapshot = _nse_snapshot(partial).model_dump(by_alias=True)
+                        for event in _card_events(snapshot, cards):
+                            yield event
+                            await asyncio.sleep(0.02)
+                if any(partial.get(key) for key in ("gainers", "losers", "statistics", "indices", "marquee")):
+                    snapshot = _nse_snapshot(partial).model_dump(by_alias=True)
+                else:
+                    snapshot = (await asyncio.to_thread(get_analytics, refresh)).model_dump(by_alias=True)
+                refresh = False
+                for event in _card_events(snapshot, ("summary", "breadth", "momentumLeaders", "volatility", "marketCards")):
+                    yield event
+                    await asyncio.sleep(0.02)
+                yield f"event: snapshot_complete\ndata: {json.dumps(snapshot, default=str)}\n\n"
+                await asyncio.sleep(interval)
+        except asyncio.CancelledError:
+            return
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.get("/api/strategies/{strategy_id}/backtest")

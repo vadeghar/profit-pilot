@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { X, Loader2, CheckCircle2, Play } from 'lucide-react';
 
-const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
+const API_BASE = import.meta.env.VITE_API_URL ?? '/api';
 
 type TradeEvent = {
   entry_time: string;
@@ -76,7 +76,7 @@ export function BacktestModal({
   useEffect(() => {
     if (!runRange) return; // setup phase -- nothing to stream yet
 
-    const url = `${API_BASE}/api/strategies/${strategyId}/backtest/stream?start=${runRange.start}&end=${runRange.end}`;
+    const url = `${API_BASE}/strategies/${strategyId}/backtest/stream?start=${runRange.start}&end=${runRange.end}`;
     const es = new EventSource(url);
 
     es.addEventListener('trade', (e) => {

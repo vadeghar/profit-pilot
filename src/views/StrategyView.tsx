@@ -4,7 +4,7 @@ import { Panel } from '../components/Panel';
 import { BacktestModal } from '../components/BacktestModal';
 import { DataWorkspace } from './MockWorkspaces';
 
-const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
+const API_BASE = import.meta.env.VITE_API_URL ?? '/api';
 
 type StrategyCard = {
   id: string;
@@ -24,7 +24,7 @@ export function StrategyView() {
   const [activeBacktest, setActiveBacktest] = useState<{ id: string; name: string } | null>(null);
 
   const loadStrategies = () => {
-    fetch(`${API_BASE}/api/strategies`)
+    fetch(`${API_BASE}/strategies`)
       .then((r) => {
         if (!r.ok) throw new Error(`API returned ${r.status}`);
         return r.json();
@@ -54,7 +54,7 @@ export function StrategyView() {
       {error && (
         <Panel title="Connection Error">
           <div className="p-4 text-xs text-[#F85149]">
-            Couldn't reach the backend at {API_BASE}. Is `uvicorn api.main:app --reload` running? ({error})
+            Couldn't reach the backend through the API proxy. Is `uvicorn api.main:app --reload` running? ({error})
           </div>
         </Panel>
       )}

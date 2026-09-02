@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Play } from 'lucide-react';
 import { Panel } from '../components/Panel';
+import { BacktestModal } from '../components/BacktestModal';
 import { DataWorkspace } from './MockWorkspaces';
 
 const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
@@ -17,10 +18,14 @@ type StrategyCard = {
 
 const money = (v: number) => `${v >= 0 ? '+' : ''}₹ ${v.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
+// Last ~6 months, computed once per mount so the modal's EventSource URL stays stable.
+const BACKTEST_END = new Date().toISOString().slice(0, 10);
+const BACKTEST_START = new Date(Date.now() - 1000 * 60 * 60 * 24 * 180).toISOString().slice(0, 10);
+
 export function StrategyView() {
   const [strategies, setStrategies] = useState<StrategyCard[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [runningId, setRunningId] = useState<string | null>(null);
+  const [activeBacktest, setActiveBacktest] = useState<{ id: string; name: string } | null>(null);
 
   const loadStrategies = () => {
     fetch(`${API_BASE}/api/strategies`)
@@ -35,21 +40,6 @@ export function StrategyView() {
   useEffect(() => {
     loadStrategies();
   }, []);
-
-  const runBacktest = async (id: string) => {
-    setRunningId(id);
-    try {
-      const end = new Date().toISOString().slice(0, 10);
-      const start = new Date(Date.now() - 1000 * 60 * 60 * 24 * 180).toISOString().slice(0, 10); // last ~6 months
-      const res = await fetch(`${API_BASE}/api/strategies/${id}/backtest?start=${start}&end=${end}`);
-      if (!res.ok) throw new Error(`Backtest failed: ${res.status}`);
-      loadStrategies();
-    } catch (e: any) {
-      setError(e.message);
-    } finally {
-      setRunningId(null);
-    }
-  };
 
   const stats: [string, string, string?][] = strategies
     ? [
@@ -102,17 +92,27 @@ export function StrategyView() {
                   </div>
                 </div>
                 <button
-                  onClick={() => runBacktest(s.id)}
-                  disabled={runningId === s.id}
-                  className="mt-3 flex h-8 w-full items-center justify-center gap-2 border border-[#30363D] text-xs hover:bg-[#21262D] disabled:opacity-50"
+                  onClick={() => setActiveBacktest({ id: s.id, name: s.name })}
+                  className="mt-3 flex h-8 w-full items-center justify-center gap-2 border border-[#30363D] text-xs hover:bg-[#21262D]"
                 >
                   <Play className="h-3.5 w-3.5" />
-                  {runningId === s.id ? 'Running…' : 'Run Backtest (6M)'}
+                  Run Backtest (6M)
                 </button>
               </div>
             </Panel>
           ))}
         </div>
+      )}
+
+      {activeBacktest && (
+        <BacktestModal
+          strategyId={activeBacktest.id}
+          strategyName={activeBacktest.name}
+          start={BACKTEST_START}
+          end={BACKTEST_END}
+          onClose={() => setActiveBacktest(null)}
+          onComplete={loadStrategies}
+        />
       )}
     </DataWorkspace>
   );

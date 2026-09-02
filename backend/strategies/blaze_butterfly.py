@@ -9,11 +9,14 @@ v1 scope decisions (per the doc's own recommendations, revisit later):
   - Holiday handling: if Monday has no data, roll to the next trading day.
   - Put-side only, every week, unconditionally.
 """
+import logging
 from datetime import date, datetime, time, timedelta
 from typing import Optional
 
 from db import repository as repo
 from .base import ExitReason, Leg, OptionsStrategy, Position
+
+logger = logging.getLogger(__name__)
 
 ENTRY_TIME = time(15, 15)
 INNER_WING = 200
@@ -31,7 +34,9 @@ def reference_atm(spot: float) -> float:
 
 class BlazeButterflyStrategy(OptionsStrategy):
     name = "NIFTY Blaze Butterfly"
-    underlying = "NIFTY"
+    # NOTE: this must match instruments.underlying_symbol exactly -- in this
+    # DB the NIFTY index/options rows are tagged 'NIFTY 50', not 'NIFTY'.
+    underlying = "NIFTY 50"
 
     def __init__(self, margin_per_unit: float = 85_000, units: int = 1,
                  target_pct: float = 1.0, stop_pct: float = 1.0):
@@ -56,6 +61,10 @@ class BlazeButterflyStrategy(OptionsStrategy):
         """Skip this week's own Tuesday expiry; use next week's Tuesday (Section 3)."""
         expiries = repo.get_weekly_expiries(self.underlying, "PE", on_or_after=entry_date, limit=4)
         if len(expiries) < 2:
+            logger.warning(
+                "[%s] no expiry pair found: underlying=%s type=PE on_or_after=%s -> got %s",
+                entry_date, self.underlying, entry_date, expiries,
+            )
             return None
         return expiries[1]  # [0] is this week's, [1] is next week's
 
@@ -75,14 +84,17 @@ class BlazeButterflyStrategy(OptionsStrategy):
 
         spot = repo.get_spot_price_at(self.underlying, entry_time)
         if spot is None:
-            # Holiday roll-forward: nudge the date and retry once via caller-level
-            # retry loop in the backtest engine; nothing we can do without an
-            # index instrument_id to probe here.
+            logger.warning(
+                "[%s] SKIP: no spot price found for underlying=%s at/before %s "
+                "(check instruments.instrument_type='INDEX' row + candles_1min coverage)",
+                entry_date, self.underlying, entry_time,
+            )
             return None
 
         atm = reference_atm(spot)
         expiry = self._target_expiry(entry_date)
         if expiry is None:
+            # _target_expiry already logged the specific reason
             return None
 
         leg_specs = [
@@ -95,9 +107,18 @@ class BlazeButterflyStrategy(OptionsStrategy):
         for side, strike, qty in leg_specs:
             instr = repo.get_instrument(self.underlying, "PE", expiry, strike)
             if instr is None:
+                logger.warning(
+                    "[%s] SKIP: no instrument row for underlying=%s type=PE expiry=%s strike=%s "
+                    "(spot=%s atm=%s) -- check strike increments / expiry format in `instruments`",
+                    entry_date, self.underlying, expiry, strike, spot, atm,
+                )
                 return None  # missing contract in DB -- skip this week rather than guess
             price = repo.get_price_at_or_before(instr["id"], entry_time)
             if price is None:
+                logger.warning(
+                    "[%s] SKIP: instrument %s (id=%s) found but no candles_1min row at/before %s",
+                    entry_date, instr["trading_symbol"], instr["id"], entry_time,
+                )
                 return None
             legs.append(
                 Leg(
@@ -113,6 +134,10 @@ class BlazeButterflyStrategy(OptionsStrategy):
             )
 
         deployed_margin = self.margin_per_unit * self.units
+        logger.info(
+            "[%s] Position OPENED: spot=%s atm=%s expiry=%s legs=%s",
+            entry_date, spot, atm, expiry, [l.trading_symbol for l in legs],
+        )
         return Position(
             entry_time=entry_time,
             expiry=expiry,

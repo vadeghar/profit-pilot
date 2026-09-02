@@ -54,6 +54,20 @@ def get_instrument(
     return dict(row) if row else None
 
 
+def get_index_instrument_id(underlying_symbol: str) -> Optional[int]:
+    """The single INDEX-type instrument row backing spot/underlying candles."""
+    query = text(
+        """
+        SELECT id FROM instruments
+        WHERE underlying_symbol = :underlying AND instrument_type = 'INDEX'
+        LIMIT 1
+        """
+    )
+    with engine.connect() as conn:
+        row = conn.execute(query, {"underlying": underlying_symbol}).fetchone()
+    return int(row[0]) if row else None
+
+
 def get_weekly_expiries(
     underlying_symbol: str,
     instrument_type: str,
@@ -109,7 +123,10 @@ def get_price_at_or_before(instrument_id: int, ts: datetime) -> Optional[float]:
 
 
 def get_spot_price_at(underlying_symbol: str, ts: datetime) -> Optional[float]:
-    """Underlying index close at/just-before ts (instrument_type = 'INDEX')."""
+    """Underlying index close at/just-before ts (instrument_type = 'INDEX').
+    Used once per week (position entry) -- for per-minute lookups during a
+    trade's lifetime, use get_index_instrument_id() + get_candles() once and
+    forward-fill instead; see backtest/engine.py."""
     query = text(
         """
         SELECT c.close

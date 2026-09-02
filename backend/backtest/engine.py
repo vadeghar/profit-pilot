@@ -5,9 +5,16 @@ exit condition fires or expiry is reached. Works for Blaze Butterfly
 today; Strategies 1-3 (VIX-gated, indicator-based, etc.) plug into the
 same loop once their `entry_datetimes` / `build_position` / `check_exit`
 are implemented.
+
+`iter_trades()` yields each TradeResult as soon as it's computed, so
+the API layer can stream results to the UI instead of the caller
+waiting for the whole backtest to finish. `run_backtest()` is the
+non-streaming convenience wrapper used by the cached /api/strategies
+list endpoint.
 """
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time
+from typing import Iterator
 
 import pandas as pd
 
@@ -58,9 +65,8 @@ class BacktestSummary:
         return curve
 
 
-def run_backtest(strategy: OptionsStrategy, start: date, end: date) -> BacktestSummary:
-    trades: list[TradeResult] = []
-
+def iter_trades(strategy: OptionsStrategy, start: date, end: date) -> Iterator[TradeResult]:
+    """Yield each trade as soon as it's resolved, in chronological order."""
     for entry_time in strategy.entry_datetimes(start, end):
         position = strategy.build_position(entry_time)
         if position is None:
@@ -68,9 +74,27 @@ def run_backtest(strategy: OptionsStrategy, start: date, end: date) -> BacktestS
 
         result = _walk_to_exit(strategy, position)
         if result is not None:
-            trades.append(result)
+            yield result
 
+
+def run_backtest(strategy: OptionsStrategy, start: date, end: date) -> BacktestSummary:
+    trades = list(iter_trades(strategy, start, end))
     return BacktestSummary(strategy_name=strategy.name, trades=trades)
+
+
+def _spot_lookup(strategy: OptionsStrategy, window_start: datetime, window_end: datetime, all_ts: list[datetime]):
+    """Fetch the underlying's candles ONCE for the whole trade window and
+    forward-fill to every timestamp we need, instead of one DB round-trip
+    per minute (which is what made backtests slow)."""
+    index_id = repo.get_index_instrument_id(strategy.underlying)
+    if index_id is None:
+        return {}
+    spot_df = repo.get_candles(index_id, window_start, window_end)
+    if spot_df.empty:
+        return {}
+    spot_series = spot_df.set_index("ts")["close"]
+    combined = spot_series.reindex(spot_series.index.union(all_ts)).ffill()
+    return combined.reindex(all_ts).to_dict()
 
 
 def _walk_to_exit(strategy: OptionsStrategy, position: Position) -> TradeResult | None:
@@ -86,6 +110,9 @@ def _walk_to_exit(strategy: OptionsStrategy, position: Position) -> TradeResult 
     # Union of timestamps across legs, so we check every minute any leg has data.
     all_ts = sorted(set().union(*[df.index for df in leg_frames.values()]))
 
+    # Spot price for the whole window, fetched once (see _spot_lookup docstring).
+    spot_by_ts = _spot_lookup(strategy, position.entry_time, window_end, all_ts)
+
     for ts in all_ts:
         prices = {}
         for leg in position.legs:
@@ -95,11 +122,11 @@ def _walk_to_exit(strategy: OptionsStrategy, position: Position) -> TradeResult 
         if len(prices) < len(position.legs):
             continue  # wait until all legs have a print at this timestamp
 
-        mtm = position.leg_mtm(prices)
-        spot = repo.get_spot_price_at(strategy.underlying, ts)
-        if spot is None:
+        spot = spot_by_ts.get(ts)
+        if spot is None or pd.isna(spot):
             continue
 
+        mtm = position.leg_mtm(prices)
         reason = strategy.check_exit(position, ts, spot, mtm)
         if reason is not None:
             return _close(position, ts, mtm, reason)

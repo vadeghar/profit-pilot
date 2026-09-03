@@ -16,6 +16,7 @@ class ExitReason(str, Enum):
     STOP_LOSS = "STOP_LOSS"
     EARLY_CUT = "EARLY_CUT"
     HARD_BACKSTOP = "HARD_BACKSTOP"
+    TIME_EXIT = "TIME_EXIT"
     EXPIRY = "EXPIRY"
 
 

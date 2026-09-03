@@ -179,5 +179,5 @@ class TitanCondorStrategy(OptionsStrategy):
             position.entry_time.date() + timedelta(days=7), TIME_EXIT
         )
         if _local_bar_time(bar_time) >= time_exit:
-            return ExitReason.EARLY_CUT
+            return ExitReason.TIME_EXIT
         return None

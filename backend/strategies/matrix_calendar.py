@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 from datetime import date, datetime, time, timedelta
 from typing import Any, Optional
+from zoneinfo import ZoneInfo
 
 from db import repository as repo
 from .base import ExitReason, Leg, OptionsStrategy, Position
@@ -34,6 +35,19 @@ TRADING_DAYS_HOLD = 2
 LOT_SIZE_CHANGE_DATE = date(2026, 1, 1)
 CURRENT_DEFAULT_LOT_SIZE = 65
 LEGACY_DEFAULT_LOT_SIZE = 75
+MARKET_TIMEZONE = ZoneInfo("Asia/Kolkata")
+
+
+def _local(value: datetime) -> datetime:
+    """Strip tzinfo after converting to IST, so comparisons against the
+    naive entry_time timestamps used elsewhere in this strategy never raise
+    "can't compare offset-naive and offset-aware datetimes". candles_1min.ts
+    is timestamptz, so bar_time arrives tz-aware; entry_time (built via
+    datetime.combine in entry_datetimes) is naive -- this normalizes both
+    to the same (naive, IST-wall-clock) representation before comparing."""
+    if value.tzinfo is None or value.utcoffset() is None:
+        return value
+    return value.astimezone(MARKET_TIMEZONE).replace(tzinfo=None)
 
 
 class MatrixCalendarStrategy(OptionsStrategy):
@@ -227,8 +241,10 @@ class MatrixCalendarStrategy(OptionsStrategy):
         if pnl_pct <= -self.stop_pct:
             return ExitReason.STOP_LOSS
 
-        # The document caps the trade at two days; use a hard timestamp so
-        # weekends/holidays cannot accidentally extend the holding period.
-        if bar_time >= position.entry_time + timedelta(days=TRADING_DAYS_HOLD):
-            return ExitReason.EARLY_CUT
+        # The document caps the trade at two days. candles_1min.ts is
+        # timestamptz, so bar_time arrives tz-aware while entry_time is
+        # naive -- normalize both through _local() before comparing, or
+        # this raises TypeError on virtually the first bar of every trade.
+        if _local(bar_time) >= _local(position.entry_time) + timedelta(days=TRADING_DAYS_HOLD):
+            return ExitReason.TIME_EXIT
         return None

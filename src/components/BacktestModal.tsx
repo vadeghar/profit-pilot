@@ -21,6 +21,11 @@ type DoneEvent = {
   total_pnl: number;
 };
 
+type BacktestErrorEvent = {
+  error: string;
+  strategy_id: string;
+};
+
 type Phase = 'setup' | 'running' | 'done';
 
 const money = (v: number) =>
@@ -90,6 +95,18 @@ export function BacktestModal({
       setPhase('done');
       es.close();
       onComplete(); // refresh the strategy cards behind the modal
+    });
+
+    // The backend emits this named event (instead of just dropping the
+    // connection) when the backtest itself throws -- e.g. a missing DB
+    // table or a bad data assumption. Without this listener the modal
+    // would sit on "Running..." forever, since a named SSE event doesn't
+    // trigger EventSource's onerror.
+    es.addEventListener('backtest_error', (e) => {
+      const payload: BacktestErrorEvent = JSON.parse((e as MessageEvent).data);
+      setStreamError(`Backtest failed: ${payload.error}`);
+      setPhase('done');
+      es.close();
     });
 
     es.onerror = () => {
@@ -219,8 +236,14 @@ export function BacktestModal({
             <div className="flex items-center gap-2 border-b border-[#21262D] px-4 py-2 text-xs text-[#8B949E]">
               {phase === 'done' ? (
                 <>
-                  <CheckCircle2 className="h-3.5 w-3.5 text-[#2EA043]" />
-                  Backtest complete — {done?.total_trades} trades processed.
+                  {streamError ? (
+                    <span className="text-[#F85149]">Backtest stopped due to an error.</span>
+                  ) : (
+                    <>
+                      <CheckCircle2 className="h-3.5 w-3.5 text-[#2EA043]" />
+                      Backtest complete — {done?.total_trades} trades processed.
+                    </>
+                  )}
                 </>
               ) : (
                 <>
@@ -242,7 +265,7 @@ export function BacktestModal({
                 {trades.length === 0 && phase === 'running' && (
                   <div className="p-4 text-xs text-[#8B949E]">Waiting for the first trade…</div>
                 )}
-                {trades.length === 0 && phase === 'done' && (
+                {trades.length === 0 && phase === 'done' && !streamError && (
                   <div className="p-4 text-xs text-[#8B949E]">No trades were generated for this window.</div>
                 )}
                 {trades.map((t, i) => (

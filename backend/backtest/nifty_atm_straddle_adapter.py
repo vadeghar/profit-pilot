@@ -72,3 +72,29 @@ def run_day(observations: Iterable[Observation], lot_size: int = 65) -> NiftyStr
         pe_lots_sold=sold_pe,
         pnl=round(cash, 2),
     )
+
+
+def load_day_observations(trading_day: date) -> list[Observation]:
+    """Load a day from DB, selecting the nearest expiry on/after that day.
+    ATM is selected from spot until entry, then remains locked by the state machine."""
+    from db import repository as repo
+    expiries = repo.get_weekly_expiries("NIFTY 50", "CE", trading_day, limit=1)
+    if not expiries:
+        return []
+    frame = repo.get_straddle_observations(expiries[0], trading_day)
+    if frame.empty:
+        return []
+    observations = []
+    for ts, group in frame.groupby("ts", sort=True):
+        spot = float(group["spot"].iloc[0])
+        atm = NiftyAtmStraddleStrategy.determine_atm_strike(spot)
+        pair = group[group["strike"] == atm].set_index("instrument_type")
+        if "CE" in pair.index and "PE" in pair.index:
+            observations.append(Observation(
+                timestamp=ts.to_pydatetime() if hasattr(ts, "to_pydatetime") else ts,
+                spot=spot,
+                india_vix=float(group["india_vix"].iloc[0]),
+                ce_price=float(pair.loc["CE", "close"]),
+                pe_price=float(pair.loc["PE", "close"]),
+            ))
+    return observations

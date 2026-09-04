@@ -37,6 +37,7 @@ from backtest.engine import BacktestSummary, iter_trades, run_backtest
 from strategies.blaze_butterfly import BlazeButterflyStrategy
 from strategies.titan_condor import TitanCondorStrategy
 from strategies.nifty_atm_straddle import NiftyAtmStraddleStrategy
+from backtest.nifty_atm_straddle_adapter import load_day_observations, run_day
 from news.models import NewsResponse
 from news.service import get_news
 from analytics.models import AnalyticsSnapshot
@@ -211,6 +212,17 @@ def backtest_strategy(
     if strat is None:
         raise HTTPException(404, f"Unknown strategy '{strategy_id}'")
 
+    if strategy_id == "nifty-atm-straddle":
+        trades = [run_day(load_day_observations(day)) for day in (start + __import__('datetime').timedelta(days=i) for i in range((end - start).days + 1))]
+        trades = [t for t in trades if t is not None]
+        return {"id": strategy_id, "name": strat.name, "total_trades": len(trades),
+                "win_rate": round(sum(t.pnl > 0 for t in trades) / len(trades) * 100, 2) if trades else 0,
+                "total_pnl": round(sum(t.pnl for t in trades), 2),
+                "equity_curve": [round(sum(x.pnl for x in trades[:i + 1]), 2) for i in range(len(trades))],
+                "trades": [{"entry_time": t.entry_time.isoformat(), "exit_time": t.exit_time.isoformat(),
+                            "reference_atm": t.atm_strike, "legs": [], "exit_reason": t.exit_reason,
+                            "pnl": t.pnl, "pnl_pct": 0} for t in trades]}
+
     summary = run_backtest(strat, start, end)
     _last_summary[strategy_id] = {"summary": summary, "run_at": datetime.utcnow()}
 
@@ -234,6 +246,20 @@ def backtest_strategy_stream(
     strat = STRATEGIES.get(strategy_id)
     if strat is None:
         raise HTTPException(404, f"Unknown strategy '{strategy_id}'")
+
+    if strategy_id == "nifty-atm-straddle":
+        def straddle_stream():
+            trades = []
+            from datetime import timedelta
+            day = start
+            while day <= end:
+                trade = run_day(load_day_observations(day))
+                if trade:
+                    trades.append(trade)
+                    yield f"event: trade\ndata: {json.dumps({'entry_time': trade.entry_time.isoformat(), 'exit_time': trade.exit_time.isoformat(), 'reference_atm': trade.atm_strike, 'legs': [], 'exit_reason': trade.exit_reason, 'pnl': trade.pnl, 'pnl_pct': 0, 'running_trade_count': len(trades), 'running_pnl': round(sum(t.pnl for t in trades), 2), 'running_win_rate': round(sum(t.pnl > 0 for t in trades) / len(trades) * 100, 2)})}\n\n"
+                day += timedelta(days=1)
+            yield f"event: done\ndata: {json.dumps({'total_trades': len(trades), 'win_rate': round(sum(t.pnl > 0 for t in trades) / len(trades) * 100, 2) if trades else 0, 'total_pnl': round(sum(t.pnl for t in trades), 2)})}\n\n"
+        return StreamingResponse(straddle_stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
     def event_stream():
         trades = []

@@ -154,3 +154,24 @@ def has_any_candle_on(instrument_id: int, day: date) -> bool:
     )
     with engine.connect() as conn:
         return conn.execute(query, {"iid": instrument_id, "day": day}).fetchone() is not None
+
+
+def get_straddle_observations(expiry: date, trading_day: date):
+    """Return paired minute observations for all strikes in one expiry."""
+    query = text("""
+        SELECT c.ts, i.strike, i.instrument_type, c.open, c.high, c.low, c.close,
+               s.close AS spot, v.close AS india_vix
+        FROM candles_1min c
+        JOIN instruments i ON i.id = c.instrument_id
+        JOIN candles_1min s ON s.ts = c.ts AND s.instrument_id = 1
+        JOIN candles_1min v ON v.ts = c.ts AND v.instrument_id = 235043
+        WHERE i.underlying_symbol = 'NIFTY 50'
+          AND i.instrument_type IN ('CE', 'PE')
+          AND i.expiry = :expiry
+          AND c.ts::date = :trading_day
+          AND c.ts::time >= TIME '14:00'
+          AND c.ts::time <= TIME '15:35'
+        ORDER BY c.ts, i.strike, i.instrument_type
+    """)
+    with engine.connect() as conn:
+        return pd.read_sql(query, conn, params={"expiry": expiry, "trading_day": trading_day})

@@ -180,7 +180,7 @@ class MatrixCalendarStrategy(OptionsStrategy):
             logger.warning("[%s] Matrix Calendar skipped: no NIFTY spot at %s", entry_date, entry_time)
             return None
 
-        expiry_pair = get_expiry_pair(entry_date)
+        expiry_pair = get_expiry_pair(entry_date, self.underlying)
         if expiry_pair is None:
             logger.warning("[%s] Matrix Calendar skipped: no weekly/monthly expiry pair", entry_date)
             return None

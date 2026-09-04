@@ -1,5 +1,5 @@
 import unittest
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 
 from strategies.nifty_atm_straddle import NiftyAtmStraddleStrategy, Observation, StraddleExitReason, StraddleState
 
@@ -41,6 +41,11 @@ class NiftyAtmStraddleTests(unittest.TestCase):
         s.on_observation(obs(14, 0))
         force = s.on_observation(obs(15, 35, ce=100, pe=100))[0]
         self.assertEqual(force.reason, StraddleExitReason.TIME_EXIT.value)
+
+    def test_utc_timestamp_is_evaluated_in_ist(self):
+        s = NiftyAtmStraddleStrategy()
+        action = s.on_observation(Observation(datetime(2026, 8, 3, 8, 30, tzinfo=timezone.utc), 25000, 14, 25, 25))
+        self.assertEqual(action[0].kind, "BUY")
 
 
 if __name__ == "__main__":

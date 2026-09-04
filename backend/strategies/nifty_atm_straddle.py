@@ -9,6 +9,7 @@ from datetime import date, datetime, time
 from enum import Enum
 from math import floor
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 
 class StraddleState(str, Enum):
@@ -72,6 +73,14 @@ class NiftyAtmStraddleStrategy:
     start_date = date(2026, 8, 3)
     monitor_start = time(14, 0)
     force_exit = time(15, 35)
+    market_timezone = ZoneInfo("Asia/Kolkata")
+
+    @classmethod
+    def market_time(cls, timestamp: datetime) -> time:
+        """Return the timestamp's clock time in NSE market timezone."""
+        if timestamp.tzinfo is not None:
+            timestamp = timestamp.astimezone(cls.market_timezone)
+        return timestamp.time().replace(tzinfo=None)
 
     @staticmethod
     def determine_atm_strike(spot: float) -> float:
@@ -94,10 +103,11 @@ class NiftyAtmStraddleStrategy:
         r = self.runtime
         if r.state == StraddleState.CLOSED:
             return []
-        if observation.timestamp.time() >= self.force_exit:
+        observation_time = self.market_time(observation.timestamp)
+        if observation_time >= self.force_exit:
             return self._close(observation.timestamp, StraddleExitReason.TIME_EXIT)
         if r.state == StraddleState.WAITING_FOR_ENTRY:
-            if observation.timestamp.time() < self.monitor_start:
+            if observation_time < self.monitor_start:
                 return []
             if observation.india_vix >= 15 or observation.combined_premium > 50:
                 return []

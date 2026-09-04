@@ -63,7 +63,7 @@ def run_day(observations: Iterable[Observation], lot_size: int = 65) -> NiftyStr
         strategy.runtime.exit_reason = strategy.runtime.exit_reason or StraddleExitReason.TIME_EXIT
         exit_time = last.timestamp
     if entry_time is None:
-        logger.info("NIFTY straddle: no entry; observations=%d first=%s last=%s", len(items), items[0].timestamp, last.timestamp)
+        logger.info("NIFTY straddle: no entry; observations=%d first=%s last=%s vix_min=%.2f vix_max=%.2f combined_min=%.2f combined_max=%.2f", len(items), items[0].timestamp, last.timestamp, min(x.india_vix for x in items), max(x.india_vix for x in items), min(x.combined_premium for x in items), max(x.combined_premium for x in items))
         return None
     return NiftyStraddleTrade(
         trading_date=items[0].timestamp.date(),

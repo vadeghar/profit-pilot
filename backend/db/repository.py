@@ -123,7 +123,7 @@ def get_price_at_or_before(instrument_id: int, ts: datetime) -> Optional[float]:
 
 
 def get_spot_price_at(underlying_symbol: str, ts: datetime) -> Optional[float]:
-    """Underlying index close at/just-before ts (instrument_type = 'INDEX').
+    """NIFTY 50 spot close for instrument_id 1 at/just-before ts.
     Used once per week (position entry) -- for per-minute lookups during a
     trade's lifetime, use get_index_instrument_id() + get_candles() once and
     forward-fill instead; see backtest/engine.py."""
@@ -131,15 +131,13 @@ def get_spot_price_at(underlying_symbol: str, ts: datetime) -> Optional[float]:
         """
         SELECT c.close
         FROM candles_1min c
-        JOIN instruments i ON i.id = c.instrument_id
-        WHERE i.underlying_symbol = :underlying
-          AND i.instrument_type = 'INDEX'
+        WHERE c.instrument_id = 1
           AND c.ts <= :ts
         ORDER BY c.ts DESC LIMIT 1
         """
     )
     with engine.connect() as conn:
-        row = conn.execute(query, {"underlying": underlying_symbol, "ts": ts}).fetchone()
+        row = conn.execute(query, {"ts": ts}).fetchone()
     return float(row[0]) if row else None
 
 

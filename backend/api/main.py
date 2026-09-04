@@ -35,6 +35,7 @@ from fastapi.responses import StreamingResponse
 
 from backtest.engine import BacktestSummary, iter_trades, run_backtest
 from strategies.blaze_butterfly import BlazeButterflyStrategy
+from strategies.titan_condor import TitanCondorStrategy
 from news.models import NewsResponse
 from news.service import get_news
 from analytics.models import AnalyticsSnapshot
@@ -48,6 +49,7 @@ load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 # and backtest/engine.py in the uvicorn console -- look here first if a
 # backtest comes back with 0 trades.
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Profit Pilot API")
 
@@ -60,6 +62,12 @@ app.add_middleware(
 
 STRATEGIES = {
     "blaze-butterfly": BlazeButterflyStrategy(),
+    "titan-condor": TitanCondorStrategy(
+        units=int(os.getenv("TITAN_CONDOR_UNITS", "10")),
+        margin_per_lot=float(os.getenv("TITAN_CONDOR_MARGIN_PER_LOT", "30000")),
+        target_pct=float(os.getenv("TITAN_CONDOR_TARGET_PCT", "1.0")),
+        extra_hedge_lots=int(os.getenv("TITAN_CONDOR_EXTRA_HEDGE_LOTS", "1")),
+    ),
 }
 
 # In-memory cache of the last backtest run per strategy, so the list
@@ -225,25 +233,30 @@ def backtest_strategy_stream(
 
     def event_stream():
         trades = []
-        for t in iter_trades(strat, start, end):
-            trades.append(t)
-            wins = sum(1 for x in trades if x.pnl > 0)
-            payload = {
-                **_trade_payload(t),
-                "running_trade_count": len(trades),
-                "running_pnl": round(sum(x.pnl for x in trades), 2),
-                "running_win_rate": round(wins / len(trades) * 100, 2),
-            }
-            yield f"event: trade\ndata: {json.dumps(payload)}\n\n"
+        try:
+            for t in iter_trades(strat, start, end):
+                trades.append(t)
+                wins = sum(1 for x in trades if x.pnl > 0)
+                payload = {
+                    **_trade_payload(t),
+                    "running_trade_count": len(trades),
+                    "running_pnl": round(sum(x.pnl for x in trades), 2),
+                    "running_win_rate": round(wins / len(trades) * 100, 2),
+                }
+                yield f"event: trade\ndata: {json.dumps(payload)}\n\n"
 
-        summary = BacktestSummary(strategy_name=strat.name, trades=trades)
-        _last_summary[strategy_id] = {"summary": summary, "run_at": datetime.utcnow()}
-        done_payload = {
-            "total_trades": summary.total_trades,
-            "win_rate": round(summary.win_rate, 2),
-            "total_pnl": round(summary.total_pnl, 2),
-        }
-        yield f"event: done\ndata: {json.dumps(done_payload)}\n\n"
+            summary = BacktestSummary(strategy_name=strat.name, trades=trades)
+            _last_summary[strategy_id] = {"summary": summary, "run_at": datetime.utcnow()}
+            done_payload = {
+                "total_trades": summary.total_trades,
+                "win_rate": round(summary.win_rate, 2),
+                "total_pnl": round(summary.total_pnl, 2),
+            }
+            yield f"event: done\ndata: {json.dumps(done_payload)}\n\n"
+        except Exception as error:
+            logger.exception("Backtest stream failed for %s: %s", strategy_id, error)
+            payload = {"error": str(error), "strategy_id": strategy_id}
+            yield f"event: backtest_error\ndata: {json.dumps(payload)}\n\n"
 
     return StreamingResponse(
         event_stream(),

@@ -154,3 +154,65 @@ def has_any_candle_on(instrument_id: int, day: date) -> bool:
     )
     with engine.connect() as conn:
         return conn.execute(query, {"iid": instrument_id, "day": day}).fetchone() is not None
+
+
+def get_nearest_strike(
+    underlying_symbol: str,
+    instrument_type: str,
+    expiry: date,
+    target_price: float,
+) -> Optional[float]:
+    """Nearest available strike in the option chain to target_price.
+
+    Used by the NIFTY ATM Straddle strategy to pick the ATM strike from
+    the actual instrument master rather than assuming a fixed 50-point
+    rounding (which can be wrong near strike-step changes or for other
+    underlyings later).
+    """
+    query = text(
+        """
+        SELECT strike
+        FROM instruments
+        WHERE underlying_symbol = :underlying
+          AND instrument_type = :itype
+          AND expiry = :expiry
+          AND is_active = true
+        ORDER BY ABS(strike - :target) ASC
+        LIMIT 1
+        """
+    )
+    with engine.connect() as conn:
+        row = conn.execute(
+            query,
+            {
+                "underlying": underlying_symbol,
+                "itype": instrument_type,
+                "expiry": expiry,
+                "target": target_price,
+            },
+        ).fetchone()
+    return float(row[0]) if row else None
+
+
+def get_trading_days(underlying_symbol: str, start: date, end: date) -> list[date]:
+    """Distinct calendar dates with underlying INDEX candle data in [start, end].
+    Used by the ATM Straddle backtest runner to iterate every eligible
+    trading day (it is not restricted to a fixed weekday, unlike Blaze
+    Butterfly / Titan Condor).
+    """
+    query = text(
+        """
+        SELECT DISTINCT c.ts::date AS d
+        FROM candles_1min c
+        JOIN instruments i ON i.id = c.instrument_id
+        WHERE i.underlying_symbol = :underlying
+          AND i.instrument_type = 'INDEX'
+          AND c.ts::date BETWEEN :start AND :end
+        ORDER BY d ASC
+        """
+    )
+    with engine.connect() as conn:
+        rows = conn.execute(
+            query, {"underlying": underlying_symbol, "start": start, "end": end}
+        ).fetchall()
+    return [r[0] for r in rows]

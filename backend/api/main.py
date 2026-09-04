@@ -16,8 +16,11 @@ Endpoints:
            instead of the endpoint above so results appear as they're found
            rather than after the whole backtest finishes.
 
-Only Blaze Butterfly is wired up for now -- add entries to STRATEGIES
-as Strategies 1-3 get implemented the same way.
+Blaze Butterfly and Titan Condor run on the generic OptionsStrategy engine
+(backtest/engine.py). NIFTY ATM Straddle has its own dedicated state-machine
+engine (backtest/atm_straddle_engine.py) -- see strategies/nifty_atm_straddle.py's
+module docstring for why. _iter_trades_for / _run_backtest_for dispatch to
+whichever engine a given strategy needs, so the endpoints below don't care.
 """
 import json
 import logging
@@ -33,9 +36,11 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
+from backtest import atm_straddle_engine
 from backtest.engine import BacktestSummary, iter_trades, run_backtest
 from strategies.blaze_butterfly import BlazeButterflyStrategy
 from strategies.titan_condor import TitanCondorStrategy
+from strategies.nifty_atm_straddle import NiftyATMStraddleStrategy
 from news.models import NewsResponse
 from news.service import get_news
 from analytics.models import AnalyticsSnapshot
@@ -68,6 +73,7 @@ STRATEGIES = {
         target_pct=float(os.getenv("TITAN_CONDOR_TARGET_PCT", "1.0")),
         extra_hedge_lots=int(os.getenv("TITAN_CONDOR_EXTRA_HEDGE_LOTS", "1")),
     ),
+    "nifty-atm-straddle": NiftyATMStraddleStrategy(),
 }
 
 # In-memory cache of the last backtest run per strategy, so the list
@@ -75,11 +81,23 @@ STRATEGIES = {
 _last_summary: dict[str, dict] = {}
 
 
+def _iter_trades_for(strat, start: date, end: date):
+    if isinstance(strat, NiftyATMStraddleStrategy):
+        return atm_straddle_engine.iter_trades(strat, start, end)
+    return iter_trades(strat, start, end)
+
+
+def _run_backtest_for(strat, start: date, end: date) -> BacktestSummary:
+    if isinstance(strat, NiftyATMStraddleStrategy):
+        return atm_straddle_engine.run_backtest(strat, start, end)
+    return run_backtest(strat, start, end)
+
+
 def _summary_card(strategy_id: str, strategy, summary) -> dict:
     return {
         "id": strategy_id,
         "name": strategy.name,
-        "subtitle": f"{strategy.underlying} · Weekly",
+        "subtitle": f"{strategy.underlying} \u00b7 {getattr(strategy, 'frequency', 'Weekly')}",
         "status": "BACKTEST",
         "win_rate": round(summary.win_rate, 1) if summary else None,
         "pnl": round(summary.total_pnl, 2) if summary else None,
@@ -207,7 +225,7 @@ def backtest_strategy(
     if strat is None:
         raise HTTPException(404, f"Unknown strategy '{strategy_id}'")
 
-    summary = run_backtest(strat, start, end)
+    summary = _run_backtest_for(strat, start, end)
     _last_summary[strategy_id] = {"summary": summary, "run_at": datetime.utcnow()}
 
     return {
@@ -234,7 +252,7 @@ def backtest_strategy_stream(
     def event_stream():
         trades = []
         try:
-            for t in iter_trades(strat, start, end):
+            for t in _iter_trades_for(strat, start, end):
                 trades.append(t)
                 wins = sum(1 for x in trades if x.pnl > 0)
                 payload = {

@@ -4,3 +4,4 @@ backend/.venv/**
 backend/**/__pycache__/**
 **/.env
 dist/**
+.npm-cache/**

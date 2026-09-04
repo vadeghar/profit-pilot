@@ -40,8 +40,12 @@ def run_day(observations: Iterable[Observation], lot_size: int = 65) -> NiftyStr
     entry_time = exit_time = None
     last = items[-1]
     for observation in items:
+        local_time = NiftyAtmStraddleStrategy.market_time(observation.timestamp)
+        candidate_atm = NiftyAtmStraddleStrategy.determine_atm_strike(observation.spot)
+        logger.info("NIFTY straddle monitor: day=%s time=%s spot=%.2f atm=%s ce=%.2f pe=%.2f combined=%.2f vix=%.2f state=%s", observation.timestamp.date(), local_time, observation.spot, candidate_atm, observation.ce_price, observation.pe_price, observation.combined_premium, observation.india_vix, strategy.runtime.state.value)
         actions = strategy.on_observation(observation)
         for action in actions:
+            logger.info("NIFTY straddle decision: time=%s action=%s ce_lots=%d pe_lots=%d reason=%s", local_time, action.kind, action.ce_lots, action.pe_lots, action.reason or "ENTRY/AVERAGE")
             cash += (action.ce_lots * observation.ce_price + action.pe_lots * observation.pe_price) * lot_size * (1 if action.kind == "SELL" else -1)
             if action.kind == "BUY":
                 bought_ce += action.ce_lots

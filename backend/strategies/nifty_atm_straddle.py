@@ -370,6 +370,11 @@ def run_strategy_for_day(trading_date: date, mode: Mode = Mode.BACKTEST) -> Stra
     common_ts = sorted(set(ce_df.index) & set(pe_df.index))
 
     for ts in common_ts:
+        # The entry candle has already been consumed at the initial entry
+        # price. Do not let its OHLC range immediately trigger 2A/2B or a
+        # target; lifecycle rules begin with the next observation.
+        if ts <= entry_ts:
+            continue
         # -- Section 13: force exit, checked first every observation --
         if _market_time(ts) >= FORCE_EXIT_TIME:
             ce_close = float(ce_df.loc[ts, "close"])

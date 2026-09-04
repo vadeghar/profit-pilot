@@ -16,8 +16,14 @@ Design notes:
   - The NIFTY Index candle history needed to cover the whole run is loaded
     ONCE up front and reused across every option instrument via merge_asof
     (backward fill: the most recent Index close at/before each option tick).
+  - merge_asof uses a tolerance (STALE_UNDERLYING_TOLERANCE) so a gap in the
+    Index candles does NOT silently reuse an arbitrarily old spot price.
+    Option candles whose nearest Index price is further back than the
+    tolerance get underlying_price/iv/greeks = NULL and
+    skip_reason = 'stale_underlying_price' -- they are never computed off a
+    stale spot, and never inherit the previous minute's Greeks.
   - Rows with no time value left (price <= intrinsic) or where the IV solver
-    fails are still inserted, with iv/greeks NULL and skip_reason set --
+    fails are also still inserted, with iv/greeks NULL and skip_reason set --
     this keeps the table a complete record of "we tried, here's what
     happened" rather than silently dropping data.
 """
@@ -47,6 +53,13 @@ EXPIRY_CLOSE_TIME = time(15, 30)  # NSE F&O session close
 SECONDS_PER_YEAR = 365.0 * 24 * 3600
 MIN_T_YEARS = 1e-6  # floor to avoid div-by-zero right at/after expiry close
 
+# How far back merge_asof is allowed to look for the "most recent" Index
+# candle before treating the spot price as missing/stale rather than reusing
+# an old one. 1-min candles should normally line up within one bar of each
+# other -- 5 minutes gives a little slack for occasional missed ticks without
+# masking a real data gap (a stalled feed, a holiday mismatch, etc).
+STALE_UNDERLYING_TOLERANCE = pd.Timedelta(minutes=5)
+
 _greeks_table = Table("option_greeks_1min", MetaData(), autoload_with=engine)
 
 
@@ -65,6 +78,78 @@ def _load_index_candles(underlying_symbol: str, start: datetime, end: datetime) 
     df = df.rename(columns={"close": "underlying_price"})[["ts", "underlying_price"]]
     df["ts"] = pd.to_datetime(df["ts"], utc=True)
     return df.sort_values("ts")
+
+
+def _stale_rows(instrument_id: int, merged: pd.DataFrame, T: pd.Series) -> pd.DataFrame:
+    """Rows whose nearest Index candle is outside STALE_UNDERLYING_TOLERANCE
+    (or missing entirely). Never inherit a previous minute's Greeks -- they
+    get NULL underlying_price/iv/greeks and an explicit skip_reason."""
+    n = len(merged)
+    return pd.DataFrame(
+        {
+            "instrument_id": instrument_id,
+            "ts": merged["ts"],
+            "underlying_price": np.nan,
+            "time_to_expiry_yrs": T.to_numpy(),
+            "iv": np.nan,
+            "delta": np.nan,
+            "gamma": np.nan,
+            "theta": np.nan,
+            "vega": np.nan,
+            "rho": np.nan,
+            "model_version": bs.MODEL_VERSION,
+            "skip_reason": "stale_underlying_price",
+            "computed_at": datetime.now(tz=IST),
+        }
+    )
+
+
+def _priced_rows(
+    instrument_id: int,
+    strike: float,
+    option_type: str,
+    merged: pd.DataFrame,
+    T: pd.Series,
+) -> pd.DataFrame:
+    """Rows with a usable (non-stale) underlying_price -- solve IV + Greeks."""
+    as_of_dates = merged["ts"].dt.tz_convert(IST).dt.date
+    r = as_of_dates.map(get_risk_free_rate).to_numpy(dtype=float)
+    q = as_of_dates.map(get_dividend_yield).to_numpy(dtype=float)
+
+    S = merged["underlying_price"].to_numpy(dtype=float)
+    K = np.full(len(merged), strike, dtype=float)
+    T_arr = T.to_numpy()
+    market_price = merged["close"].to_numpy(dtype=float)
+    option_type_arr = np.full(len(merged), option_type, dtype=object)
+
+    iv, skip_reason = bs.implied_volatility(S, K, T_arr, r, q, market_price, option_type_arr)
+
+    has_iv = ~np.isnan(iv)
+    greeks = {k: np.full(len(merged), np.nan) for k in ("delta", "gamma", "theta", "vega", "rho")}
+    if has_iv.any():
+        computed = bs.compute_greeks(
+            S[has_iv], K[has_iv], T_arr[has_iv], r[has_iv], q[has_iv], iv[has_iv], option_type_arr[has_iv]
+        )
+        for key, values in computed.items():
+            greeks[key][has_iv] = values
+
+    return pd.DataFrame(
+        {
+            "instrument_id": instrument_id,
+            "ts": merged["ts"],
+            "underlying_price": S,
+            "time_to_expiry_yrs": T_arr,
+            "iv": iv,
+            "delta": greeks["delta"],
+            "gamma": greeks["gamma"],
+            "theta": greeks["theta"],
+            "vega": greeks["vega"],
+            "rho": greeks["rho"],
+            "model_version": bs.MODEL_VERSION,
+            "skip_reason": skip_reason,
+            "computed_at": datetime.now(tz=IST),
+        }
+    )
 
 
 def _process_instrument(
@@ -90,55 +175,34 @@ def _process_instrument(
     candles["ts"] = pd.to_datetime(candles["ts"], utc=True)
     candles = candles.sort_values("ts")
 
-    merged = pd.merge_asof(candles, index_df, on="ts", direction="backward")
-    merged = merged.dropna(subset=["underlying_price"])
-    if merged.empty:
-        return None
+    # tolerance means a gap in the Index candles produces NaN underlying_price
+    # here rather than silently reusing an arbitrarily old spot tick.
+    merged = pd.merge_asof(
+        candles,
+        index_df,
+        on="ts",
+        direction="backward",
+        tolerance=STALE_UNDERLYING_TOLERANCE,
+    )
 
     T = (expiry_close - merged["ts"]).dt.total_seconds() / SECONDS_PER_YEAR
     valid = T > MIN_T_YEARS
     if not valid.any():
         return None
-    merged = merged.loc[valid].copy()
-    T = T.loc[valid].clip(lower=MIN_T_YEARS).to_numpy()
+    merged = merged.loc[valid].reset_index(drop=True)
+    T = T.loc[valid].clip(lower=MIN_T_YEARS).reset_index(drop=True)
 
-    as_of_dates = merged["ts"].dt.tz_convert(IST).dt.date
-    r = as_of_dates.map(get_risk_free_rate).to_numpy(dtype=float)
-    q = as_of_dates.map(get_dividend_yield).to_numpy(dtype=float)
+    is_stale = merged["underlying_price"].isna()
 
-    S = merged["underlying_price"].to_numpy(dtype=float)
-    K = np.full(len(merged), strike, dtype=float)
-    market_price = merged["close"].to_numpy(dtype=float)
-    option_type_arr = np.full(len(merged), option_type, dtype=object)
-
-    iv, skip_reason = bs.implied_volatility(S, K, T, r, q, market_price, option_type_arr)
-
-    has_iv = ~np.isnan(iv)
-    greeks = {k: np.full(len(merged), np.nan) for k in ("delta", "gamma", "theta", "vega", "rho")}
-    if has_iv.any():
-        computed = bs.compute_greeks(
-            S[has_iv], K[has_iv], T[has_iv], r[has_iv], q[has_iv], iv[has_iv], option_type_arr[has_iv]
+    parts = []
+    if is_stale.any():
+        parts.append(_stale_rows(instrument_id, merged.loc[is_stale], T.loc[is_stale]))
+    if (~is_stale).any():
+        parts.append(
+            _priced_rows(instrument_id, strike, option_type, merged.loc[~is_stale], T.loc[~is_stale])
         )
-        for key, values in computed.items():
-            greeks[key][has_iv] = values
 
-    result = pd.DataFrame(
-        {
-            "instrument_id": instrument_id,
-            "ts": merged["ts"],
-            "underlying_price": S,
-            "time_to_expiry_yrs": T,
-            "iv": iv,
-            "delta": greeks["delta"],
-            "gamma": greeks["gamma"],
-            "theta": greeks["theta"],
-            "vega": greeks["vega"],
-            "rho": greeks["rho"],
-            "model_version": bs.MODEL_VERSION,
-            "skip_reason": skip_reason,
-            "computed_at": datetime.now(tz=IST),
-        }
-    )
+    result = pd.concat(parts, ignore_index=True).sort_values("ts").reset_index(drop=True)
     # NaN -> None so psycopg2 writes SQL NULL instead of 'NaN'
     return result.where(pd.notnull(result), None)
 
@@ -176,6 +240,7 @@ def run_backfill(underlying_symbol: str, from_expiry: date | None, to_expiry: da
 
     total = len(instruments)
     total_rows_written = 0
+    total_stale = 0
     for i, (_, instrument_row) in enumerate(instruments.iterrows(), start=1):
         result = _process_instrument(instrument_row, index_df)
         if result is None:
@@ -186,12 +251,18 @@ def run_backfill(underlying_symbol: str, from_expiry: date | None, to_expiry: da
             continue
         _upsert(result)
         total_rows_written += len(result)
+        stale_count = int((result["skip_reason"] == "stale_underlying_price").sum())
+        total_stale += stale_count
         logger.info(
-            "[%d/%d] %s: wrote %d rows (%d with solved IV).",
-            i, total, instrument_row["trading_symbol"], len(result), int(result["iv"].notna().sum()),
+            "[%d/%d] %s: wrote %d rows (%d with solved IV, %d stale-underlying).",
+            i, total, instrument_row["trading_symbol"], len(result),
+            int(result["iv"].notna().sum()), stale_count,
         )
 
-    logger.info("Done. %d instruments processed, %d rows written total.", total, total_rows_written)
+    logger.info(
+        "Done. %d instruments processed, %d rows written total (%d flagged stale_underlying_price).",
+        total, total_rows_written, total_stale,
+    )
 
 
 def main() -> None:

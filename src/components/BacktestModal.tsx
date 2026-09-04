@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { X, Loader2, CheckCircle2, Play } from 'lucide-react';
+import { X, Loader2, CheckCircle2, Play, Download } from 'lucide-react';
 
 const API_BASE = import.meta.env.VITE_API_URL ?? '/api';
 
@@ -13,6 +13,8 @@ type TradeEvent = {
   running_trade_count: number;
   running_pnl: number;
   running_win_rate: number;
+  reference_atm?: number;
+  details?: { spot?: number; fills?: { ts: string; action: string; option_type: string; lots: number; price: number; tag: string }[] };
 };
 
 type DoneEvent = {
@@ -43,6 +45,41 @@ const dateTime = (iso: string) =>
 
 const todayStr = () => new Date().toISOString().slice(0, 10);
 const daysAgoStr = (n: number) => new Date(Date.now() - n * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+const xml = (value: unknown) => String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+function exportTrades(strategyName: string, range: { start: string; end: string }, trades: TradeEvent[], totalPnl: number) {
+  const rows: string[] = [];
+  const row = (values: unknown[]) => `<Row>${values.map((v) => `<Cell><Data ss:Type="String">${xml(v)}</Data></Cell>`).join('')}</Row>`;
+  rows.push(row(['Profit Pilot']));
+  rows.push(row(['Strategy Name', strategyName]));
+  rows.push(row(['Backtest Period', `${range.start} to ${range.end}`]));
+  rows.push(row(['Export Date', new Date().toLocaleString('en-IN')]));
+  rows.push(row(['Total Trades', trades.length]));
+  rows.push(row(['Aggregated Profit/Loss', totalPnl]));
+  rows.push(row([]));
+  rows.push(row(['S.No', 'Trade Date', 'Time', 'Symbol', 'Action', 'Lots', 'Price', 'NIFTY Spot', 'Stage', 'P&L']));
+  let serial = 1;
+  trades.forEach((trade) => {
+    const fills = trade.details?.fills ?? [];
+    if (!fills.length) {
+      rows.push(row([serial++, trade.entry_time.slice(0, 10), trade.entry_time, trade.legs.join(', '), 'TRADE', '', '', trade.details?.spot ?? '', '', trade.pnl]));
+      return;
+    }
+    fills.forEach((fill, index) => rows.push(row([
+      serial++, fill.ts.slice(0, 10), new Date(fill.ts).toLocaleString('en-IN'), `${trade.reference_atm ?? ''} ${fill.option_type}`,
+      fill.action, fill.lots, fill.price, index === 0 && fill.tag === 'INITIAL' ? (trade.details?.spot ?? '') : '', fill.tag, index === fills.length - 1 ? trade.pnl : '',
+    ])));
+  });
+  const workbook = `<?xml version="1.0"?><Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"><Worksheet ss:Name="Trade Details"><Table>${rows.join('')}</Table></Worksheet></Workbook>`;
+  const blob = new Blob([workbook], { type: 'application/vnd.ms-excel' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `Profit-Pilot-${strategyName.replace(/[^a-z0-9]+/gi, '-')}-${range.start}-to-${range.end}.xls`;
+  link.click();
+  URL.revokeObjectURL(url);
+}
 
 /** From/To validation, in one place so it's easy to extend when more filters are added. */
 function validateRange(from: string, to: string): string | null {
@@ -210,8 +247,13 @@ export function BacktestModal({
         {/* RUNNING / DONE: live stats + trade grid */}
         {phase !== 'setup' && (
           <>
-            <div className="border-b border-[#21262D] px-4 py-2 text-[10px] text-[#8B949E]">
-              {runRange?.start} → {runRange?.end}
+            <div className="flex items-center justify-between border-b border-[#21262D] px-4 py-2 text-[10px] text-[#8B949E]">
+              <span>{runRange?.start} → {runRange?.end}</span>
+              {phase === 'done' && trades.length > 0 && runRange && (
+                <button onClick={() => exportTrades(strategyName, runRange, trades, livePnl)} title="Export trade details to Excel" aria-label="Export trade details to Excel" className="p-1 hover:bg-[#21262D] hover:text-white">
+                  <Download className="h-4 w-4" />
+                </button>
+              )}
             </div>
 
             {streamError && <div className="border-b border-[#21262D] p-3 text-xs text-[#F85149]">{streamError}</div>}

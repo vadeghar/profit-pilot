@@ -114,6 +114,7 @@ def _trade_payload(t) -> dict:
         "exit_reason": t.exit_reason,
         "pnl": t.pnl,
         "pnl_pct": t.pnl_pct,
+        "details": t.details,
     }
 
 

@@ -50,6 +50,13 @@ def _to_trade_result(record: StraddleTradeRecord) -> TradeResult:
         pnl=round(record.realized_pnl, 2),
         pnl_pct=round(record.pnl_pct, 2),
         deployed_margin=round(record.total_premium_outlay, 2),
+        details={
+            "trading_date": record.trading_date,
+            "expiry_date": record.expiry_date,
+            "spot": record.initial_entry_spot,
+            "lot_size": record.lot_size,
+            "fills": record.fills,
+        },
     )
 
 

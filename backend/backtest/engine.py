@@ -34,6 +34,7 @@ class TradeResult:
     pnl: float
     pnl_pct: float
     deployed_margin: float
+    details: dict | None = None
 
 
 @dataclass

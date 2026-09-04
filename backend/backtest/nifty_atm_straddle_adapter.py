@@ -65,7 +65,7 @@ def run_day(observations: Iterable[Observation], lot_size: int = 65) -> NiftyStr
     if entry_time is None:
         logger.info("NIFTY straddle: no entry; observations=%d first=%s last=%s vix_min=%.2f vix_max=%.2f combined_min=%.2f combined_max=%.2f", len(items), items[0].timestamp, last.timestamp, min(x.india_vix for x in items), max(x.india_vix for x in items), min(x.combined_premium for x in items), max(x.combined_premium for x in items))
         return None
-    return NiftyStraddleTrade(
+    trade = NiftyStraddleTrade(
         trading_date=items[0].timestamp.date(),
         entry_time=entry_time,
         exit_time=exit_time or last.timestamp,
@@ -77,6 +77,8 @@ def run_day(observations: Iterable[Observation], lot_size: int = 65) -> NiftyStr
         pe_lots_sold=sold_pe,
         pnl=round(cash, 2),
     )
+    logger.info("NIFTY straddle: TRADE completed day=%s entry=%s exit=%s atm=%s reason=%s bought=%d/%d sold=%d/%d pnl=%.2f", trade.trading_date, trade.entry_time, trade.exit_time, trade.atm_strike, trade.exit_reason, trade.ce_lots_bought, trade.pe_lots_bought, trade.ce_lots_sold, trade.pe_lots_sold, trade.pnl)
+    return trade
 
 
 def load_day_observations(trading_day: date) -> list[Observation]:

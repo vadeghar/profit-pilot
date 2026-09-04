@@ -261,6 +261,7 @@ def backtest_strategy_stream(
                 trade = run_day(load_day_observations(day))
                 if trade:
                     trades.append(trade)
+                    logger.info("NIFTY straddle stream: emitted trade #%d day=%s pnl=%.2f", len(trades), trade.trading_date, trade.pnl)
                     yield f"event: trade\ndata: {json.dumps({'entry_time': trade.entry_time.isoformat(), 'exit_time': trade.exit_time.isoformat(), 'reference_atm': trade.atm_strike, 'legs': [], 'exit_reason': trade.exit_reason, 'pnl': trade.pnl, 'pnl_pct': 0, 'running_trade_count': len(trades), 'running_pnl': round(sum(t.pnl for t in trades), 2), 'running_win_rate': round(sum(t.pnl > 0 for t in trades) / len(trades) * 100, 2)})}\n\n"
                 day += timedelta(days=1)
             _last_summary[strategy_id] = {"summary": type("Summary", (), {
@@ -268,6 +269,7 @@ def backtest_strategy_stream(
                 "win_rate": (sum(t.pnl > 0 for t in trades) / len(trades) * 100) if trades else 0,
                 "total_pnl": sum(t.pnl for t in trades),
             })(), "run_at": datetime.utcnow()}
+            logger.info("NIFTY straddle stream: complete total_trades=%d total_pnl=%.2f", len(trades), sum(t.pnl for t in trades))
             yield f"event: done\ndata: {json.dumps({'total_trades': len(trades), 'win_rate': round(sum(t.pnl > 0 for t in trades) / len(trades) * 100, 2) if trades else 0, 'total_pnl': round(sum(t.pnl for t in trades), 2)})}\n\n"
         return StreamingResponse(straddle_stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 

@@ -36,6 +36,7 @@ from fastapi.responses import StreamingResponse
 from backtest.engine import BacktestSummary, iter_trades, run_backtest
 from strategies.blaze_butterfly import BlazeButterflyStrategy
 from strategies.titan_condor import TitanCondorStrategy
+from strategies.nifty_atm_straddle import NiftyAtmStraddleStrategy
 from news.models import NewsResponse
 from news.service import get_news
 from analytics.models import AnalyticsSnapshot
@@ -68,6 +69,9 @@ STRATEGIES = {
         target_pct=float(os.getenv("TITAN_CONDOR_TARGET_PCT", "1.0")),
         extra_hedge_lots=int(os.getenv("TITAN_CONDOR_EXTRA_HEDGE_LOTS", "1")),
     ),
+    # The state-machine adapter is being integrated separately because this
+    # strategy changes quantities through averaging and partial exits.
+    "nifty-atm-straddle": NiftyAtmStraddleStrategy(),
 }
 
 # In-memory cache of the last backtest run per strategy, so the list

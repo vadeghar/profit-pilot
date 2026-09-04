@@ -66,6 +66,8 @@ class StraddleRuntime:
 
 
 class NiftyAtmStraddleStrategy:
+    name = "NIFTY ATM CE + PE Long Straddle"
+    underlying = "NIFTY 50"
     strategy_id = "NK CAS NIFTY_ATM_STRADDLE_2PM_V1"
     start_date = date(2026, 8, 3)
     monitor_start = time(14, 0)

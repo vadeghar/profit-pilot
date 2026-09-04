@@ -215,6 +215,11 @@ def backtest_strategy(
     if strategy_id == "nifty-atm-straddle":
         trades = [run_day(load_day_observations(day)) for day in (start + __import__('datetime').timedelta(days=i) for i in range((end - start).days + 1))]
         trades = [t for t in trades if t is not None]
+        _last_summary[strategy_id] = {"summary": type("Summary", (), {
+            "total_trades": len(trades),
+            "win_rate": (sum(t.pnl > 0 for t in trades) / len(trades) * 100) if trades else 0,
+            "total_pnl": sum(t.pnl for t in trades),
+        })(), "run_at": datetime.utcnow()}
         return {"id": strategy_id, "name": strat.name, "total_trades": len(trades),
                 "win_rate": round(sum(t.pnl > 0 for t in trades) / len(trades) * 100, 2) if trades else 0,
                 "total_pnl": round(sum(t.pnl for t in trades), 2),
@@ -258,6 +263,11 @@ def backtest_strategy_stream(
                     trades.append(trade)
                     yield f"event: trade\ndata: {json.dumps({'entry_time': trade.entry_time.isoformat(), 'exit_time': trade.exit_time.isoformat(), 'reference_atm': trade.atm_strike, 'legs': [], 'exit_reason': trade.exit_reason, 'pnl': trade.pnl, 'pnl_pct': 0, 'running_trade_count': len(trades), 'running_pnl': round(sum(t.pnl for t in trades), 2), 'running_win_rate': round(sum(t.pnl > 0 for t in trades) / len(trades) * 100, 2)})}\n\n"
                 day += timedelta(days=1)
+            _last_summary[strategy_id] = {"summary": type("Summary", (), {
+                "total_trades": len(trades),
+                "win_rate": (sum(t.pnl > 0 for t in trades) / len(trades) * 100) if trades else 0,
+                "total_pnl": sum(t.pnl for t in trades),
+            })(), "run_at": datetime.utcnow()}
             yield f"event: done\ndata: {json.dumps({'total_trades': len(trades), 'win_rate': round(sum(t.pnl > 0 for t in trades) / len(trades) * 100, 2) if trades else 0, 'total_pnl': round(sum(t.pnl for t in trades), 2)})}\n\n"
         return StreamingResponse(straddle_stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 

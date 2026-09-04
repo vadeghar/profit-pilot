@@ -7,8 +7,11 @@ the fixed-leg engine, which cannot represent averaging correctly.
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Iterable
+import logging
 
 from strategies.nifty_atm_straddle import NiftyAtmStraddleStrategy, Observation, StraddleExitReason, StraddleState
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -29,6 +32,7 @@ def run_day(observations: Iterable[Observation], lot_size: int = 65) -> NiftyStr
     """Run one day. Observations must be chronological and contain paired prices."""
     items = list(observations)
     if not items:
+        logger.info("NIFTY straddle: no observations for day")
         return None
     strategy = NiftyAtmStraddleStrategy()
     cash = 0.0
@@ -59,6 +63,7 @@ def run_day(observations: Iterable[Observation], lot_size: int = 65) -> NiftyStr
         strategy.runtime.exit_reason = strategy.runtime.exit_reason or StraddleExitReason.TIME_EXIT
         exit_time = last.timestamp
     if entry_time is None:
+        logger.info("NIFTY straddle: no entry; observations=%d first=%s last=%s", len(items), items[0].timestamp, last.timestamp)
         return None
     return NiftyStraddleTrade(
         trading_date=items[0].timestamp.date(),
@@ -80,9 +85,12 @@ def load_day_observations(trading_day: date) -> list[Observation]:
     from db import repository as repo
     expiries = repo.get_weekly_expiries("NIFTY 50", "CE", trading_day, limit=1)
     if not expiries:
+        logger.warning("NIFTY straddle: no expiry found for trading_day=%s", trading_day)
         return []
+    logger.info("NIFTY straddle: day=%s selected_expiry=%s", trading_day, expiries[0])
     frame = repo.get_straddle_observations(expiries[0], trading_day)
     if frame.empty:
+        logger.warning("NIFTY straddle: zero joined option/spot/VIX rows day=%s expiry=%s", trading_day, expiries[0])
         return []
     observations = []
     for ts, group in frame.groupby("ts", sort=True):
@@ -97,4 +105,5 @@ def load_day_observations(trading_day: date) -> list[Observation]:
                 ce_price=float(pair.loc["CE", "close"]),
                 pe_price=float(pair.loc["PE", "close"]),
             ))
+    logger.info("NIFTY straddle: day=%s raw_rows=%d paired_observations=%d", trading_day, len(frame), len(observations))
     return observations

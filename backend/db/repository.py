@@ -94,6 +94,29 @@ def get_weekly_expiries(
     return [r[0] for r in rows]
 
 
+def get_option_instruments(
+    underlying_symbol: str,
+    start: Optional[date] = None,
+    end: Optional[date] = None,
+) -> pd.DataFrame:
+    """All CE/PE instrument rows for an underlying, optionally filtered by
+    expiry date range. Used by the Greeks backfill to enumerate what needs
+    processing -- includes both expired and active/future contracts."""
+    query = text(
+        """
+        SELECT id AS instrument_id, trading_symbol, instrument_type, expiry, strike
+        FROM instruments
+        WHERE underlying_symbol = :underlying
+          AND instrument_type IN ('CE', 'PE')
+          AND (CAST(:start AS date) IS NULL OR expiry >= :start)
+          AND (CAST(:end AS date) IS NULL OR expiry <= :end)
+        ORDER BY expiry ASC, strike ASC, instrument_type ASC
+        """
+    )
+    with engine.connect() as conn:
+        return pd.read_sql(query, conn, params={"underlying": underlying_symbol, "start": start, "end": end})
+
+
 def get_candles(instrument_id: int, start: datetime, end: datetime) -> pd.DataFrame:
     """1-min OHLCV for one instrument between start and end, ascending."""
     query = text(

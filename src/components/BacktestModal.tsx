@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { X, Loader2, CheckCircle2, Play, Download } from 'lucide-react';
+import * as XLSX from 'xlsx';
 
 const API_BASE = import.meta.env.VITE_API_URL ?? '/api';
 
@@ -46,39 +47,34 @@ const dateTime = (iso: string) =>
 const todayStr = () => new Date().toISOString().slice(0, 10);
 const daysAgoStr = (n: number) => new Date(Date.now() - n * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
-const xml = (value: unknown) => String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-
 function exportTrades(strategyName: string, range: { start: string; end: string }, trades: TradeEvent[], totalPnl: number) {
-  const rows: string[] = [];
-  const row = (values: unknown[]) => `<Row>${values.map((v) => `<Cell><Data ss:Type="String">${xml(v)}</Data></Cell>`).join('')}</Row>`;
-  rows.push(row(['Profit Pilot']));
-  rows.push(row(['Strategy Name', strategyName]));
-  rows.push(row(['Backtest Period', `${range.start} to ${range.end}`]));
-  rows.push(row(['Export Date', new Date().toLocaleString('en-IN')]));
-  rows.push(row(['Total Trades', trades.length]));
-  rows.push(row(['Aggregated Profit/Loss', totalPnl]));
-  rows.push(row([]));
-  rows.push(row(['S.No', 'Trade Date', 'Time', 'Symbol', 'Action', 'Lots', 'Price', 'NIFTY Spot', 'Stage', 'P&L']));
+  const rows: unknown[][] = [
+    ['Profit Pilot'],
+    ['Strategy Name', strategyName],
+    ['Backtest Period', `${range.start} to ${range.end}`],
+    ['Export Date', new Date()],
+    ['Total Trades', trades.length],
+    ['Aggregated Profit/Loss', totalPnl],
+    [],
+    ['S.No', 'Trade Date', 'Time', 'Symbol', 'Action', 'Lots', 'Price', 'NIFTY Spot', 'Stage', 'P&L'],
+  ];
   let serial = 1;
   trades.forEach((trade) => {
     const fills = trade.details?.fills ?? [];
     if (!fills.length) {
-      rows.push(row([serial++, trade.entry_time.slice(0, 10), trade.entry_time, trade.legs.join(', '), 'TRADE', '', '', trade.details?.spot ?? '', '', trade.pnl]));
+      rows.push([serial++, trade.entry_time.slice(0, 10), new Date(trade.entry_time), trade.legs.join(', '), 'TRADE', '', '', trade.details?.spot ?? '', '', trade.pnl]);
       return;
     }
-    fills.forEach((fill, index) => rows.push(row([
+    fills.forEach((fill, index) => rows.push([
       serial++, fill.ts.slice(0, 10), new Date(fill.ts).toLocaleString('en-IN'), `${trade.reference_atm ?? ''} ${fill.option_type}`,
       fill.action, fill.lots, fill.price, index === 0 && fill.tag === 'INITIAL' ? (trade.details?.spot ?? '') : '', fill.tag, index === fills.length - 1 ? trade.pnl : '',
-    ])));
+    ]));
   });
-  const workbook = `<?xml version="1.0"?><Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"><Worksheet ss:Name="Trade Details"><Table>${rows.join('')}</Table></Worksheet></Workbook>`;
-  const blob = new Blob([workbook], { type: 'application/vnd.ms-excel' });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = `Profit-Pilot-${strategyName.replace(/[^a-z0-9]+/gi, '-')}-${range.start}-to-${range.end}.xls`;
-  link.click();
-  URL.revokeObjectURL(url);
+  const worksheet = XLSX.utils.aoa_to_sheet(rows);
+  worksheet['!cols'] = [8, 14, 22, 18, 10, 8, 12, 14, 18, 14].map((wch) => ({ wch }));
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, worksheet, 'Trade Details');
+  XLSX.writeFile(workbook, `Profit-Pilot-${strategyName.replace(/[^a-z0-9]+/gi, '-')}-${range.start}-to-${range.end}.xlsx`);
 }
 
 /** From/To validation, in one place so it's easy to extend when more filters are added. */

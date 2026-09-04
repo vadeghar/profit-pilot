@@ -225,44 +225,299 @@ def _upsert(rows: pd.DataFrame) -> None:
         conn.execute(stmt)
 
 
-def run_backfill(underlying_symbol: str, from_expiry: date | None, to_expiry: date | None) -> None:
-    instruments = repository.get_option_instruments(underlying_symbol, start=from_expiry, end=to_expiry)
+# def run_backfill(underlying_symbol: str, from_expiry: date | None, to_expiry: date | None) -> None:
+#     instruments = repository.get_option_instruments(underlying_symbol, start=from_expiry, end=to_expiry)
+#     if instruments.empty:
+#         logger.warning("No option instruments found for %s in the given range.", underlying_symbol)
+#         return
+
+#     overall_start = datetime.combine(instruments["expiry"].min() - pd.Timedelta(days=45), time(0, 0))
+#     overall_end = datetime.combine(instruments["expiry"].max(), EXPIRY_CLOSE_TIME)
+#     logger.info(
+#         "Loading %s Index candles from %s to %s ...", underlying_symbol, overall_start, overall_end
+#     )
+#     index_df = _load_index_candles(underlying_symbol, overall_start, overall_end)
+
+#     total = len(instruments)
+#     total_rows_written = 0
+#     total_stale = 0
+#     for i, (_, instrument_row) in enumerate(instruments.iterrows(), start=1):
+#         result = _process_instrument(instrument_row, index_df)
+#         if result is None:
+#             logger.info(
+#                 "[%d/%d] %s: no candles / no valid time-to-expiry, skipped.",
+#                 i, total, instrument_row["trading_symbol"],
+#             )
+#             continue
+#         _upsert(result)
+#         total_rows_written += len(result)
+#         stale_count = int((result["skip_reason"] == "stale_underlying_price").sum())
+#         total_stale += stale_count
+#         logger.info(
+#             "[%d/%d] %s: wrote %d rows (%d with solved IV, %d stale-underlying).",
+#             i, total, instrument_row["trading_symbol"], len(result),
+#             int(result["iv"].notna().sum()), stale_count,
+#         )
+
+#     logger.info(
+#         "Done. %d instruments processed, %d rows written total (%d flagged stale_underlying_price).",
+#         total, total_rows_written, total_stale,
+#     )
+def run_backfill(
+    underlying_symbol: str,
+    from_expiry: date | None,
+    to_expiry: date | None
+) -> None:
+    logger.info("=" * 100)
+    logger.info("STARTING OPTION BACKFILL")
+    logger.info("Underlying Symbol : %s", underlying_symbol)
+    logger.info("From Expiry       : %s", from_expiry)
+    logger.info("To Expiry         : %s", to_expiry)
+    logger.info("=" * 100)
+
+    logger.info(
+        "Fetching option instruments for %s (start=%s, end=%s)...",
+        underlying_symbol,
+        from_expiry,
+        to_expiry,
+    )
+
+    instruments = repository.get_option_instruments(
+        underlying_symbol,
+        start=from_expiry,
+        end=to_expiry
+    )
+
+    logger.info(
+        "Option instrument query completed. Found %d instruments.",
+        len(instruments)
+    )
+
     if instruments.empty:
-        logger.warning("No option instruments found for %s in the given range.", underlying_symbol)
+        logger.warning(
+            "No option instruments found for %s in the given range.",
+            underlying_symbol
+        )
+        logger.info("BACKFILL FINISHED - nothing to process.")
+        logger.info("=" * 100)
         return
 
-    overall_start = datetime.combine(instruments["expiry"].min() - pd.Timedelta(days=45), time(0, 0))
-    overall_end = datetime.combine(instruments["expiry"].max(), EXPIRY_CLOSE_TIME)
     logger.info(
-        "Loading %s Index candles from %s to %s ...", underlying_symbol, overall_start, overall_end
+        "Instrument expiry range: %s -> %s",
+        instruments["expiry"].min(),
+        instruments["expiry"].max(),
     )
-    index_df = _load_index_candles(underlying_symbol, overall_start, overall_end)
+
+    overall_start = datetime.combine(
+        instruments["expiry"].min() - pd.Timedelta(days=45),
+        time(0, 0)
+    )
+
+    overall_end = datetime.combine(
+        instruments["expiry"].max(),
+        EXPIRY_CLOSE_TIME
+    )
+
+    logger.info(
+        "Calculated underlying index candle range:"
+    )
+    logger.info(
+        "  Index Symbol : %s",
+        underlying_symbol
+    )
+    logger.info(
+        "  Start        : %s",
+        overall_start
+    )
+    logger.info(
+        "  End          : %s",
+        overall_end
+    )
+
+    logger.info(
+        "Loading %s Index candles from %s to %s ...",
+        underlying_symbol,
+        overall_start,
+        overall_end
+    )
+
+    index_df = _load_index_candles(
+        underlying_symbol,
+        overall_start,
+        overall_end
+    )
+
+    logger.info(
+        "Index candle loading completed."
+    )
+    logger.info(
+        "Loaded %d index candle rows.",
+        len(index_df)
+    )
+
+    if not index_df.empty:
+        logger.info(
+            "Index candle actual range: %s -> %s",
+            index_df.index.min() if hasattr(index_df, "index") else "N/A",
+            index_df.index.max() if hasattr(index_df, "index") else "N/A",
+        )
+        logger.info(
+            "Index candle columns: %s",
+            list(index_df.columns)
+        )
 
     total = len(instruments)
     total_rows_written = 0
     total_stale = 0
-    for i, (_, instrument_row) in enumerate(instruments.iterrows(), start=1):
-        result = _process_instrument(instrument_row, index_df)
+
+    logger.info("=" * 100)
+    logger.info(
+        "Beginning instrument processing. Total instruments: %d",
+        total
+    )
+    logger.info("=" * 100)
+
+    for i, (_, instrument_row) in enumerate(
+        instruments.iterrows(),
+        start=1
+    ):
+        trading_symbol = instrument_row["trading_symbol"]
+
+        logger.info(
+            "[%d/%d] START processing instrument: %s",
+            i,
+            total,
+            trading_symbol,
+        )
+
+        logger.info(
+            "[%d/%d] Instrument details: expiry=%s, strike=%s, option_type=%s",
+            i,
+            total,
+            instrument_row.get("expiry"),
+            instrument_row.get("strike"),
+            instrument_row.get("option_type"),
+        )
+
+        result = _process_instrument(
+            instrument_row,
+            index_df
+        )
+
         if result is None:
             logger.info(
                 "[%d/%d] %s: no candles / no valid time-to-expiry, skipped.",
-                i, total, instrument_row["trading_symbol"],
+                i,
+                total,
+                trading_symbol,
+            )
+            logger.info(
+                "[%d/%d] END processing instrument: %s",
+                i,
+                total,
+                trading_symbol,
             )
             continue
+
+        logger.info(
+            "[%d/%d] %s: _process_instrument returned %d rows.",
+            i,
+            total,
+            trading_symbol,
+            len(result),
+        )
+
+        logger.info(
+            "[%d/%d] %s: starting database upsert...",
+            i,
+            total,
+            trading_symbol,
+        )
+
         _upsert(result)
+
+        logger.info(
+            "[%d/%d] %s: database upsert completed.",
+            i,
+            total,
+            trading_symbol,
+        )
+
         total_rows_written += len(result)
-        stale_count = int((result["skip_reason"] == "stale_underlying_price").sum())
+
+        stale_count = int(
+            (result["skip_reason"] == "stale_underlying_price").sum()
+        )
+
         total_stale += stale_count
+
+        solved_iv_count = int(
+            result["iv"].notna().sum()
+        )
+
         logger.info(
             "[%d/%d] %s: wrote %d rows (%d with solved IV, %d stale-underlying).",
-            i, total, instrument_row["trading_symbol"], len(result),
-            int(result["iv"].notna().sum()), stale_count,
+            i,
+            total,
+            trading_symbol,
+            len(result),
+            solved_iv_count,
+            stale_count,
         )
+
+        logger.info(
+            "[%d/%d] %s: cumulative rows written=%d, cumulative stale=%d.",
+            i,
+            total,
+            trading_symbol,
+            total_rows_written,
+            total_stale,
+        )
+
+        logger.info(
+            "[%d/%d] END processing instrument: %s",
+            i,
+            total,
+            trading_symbol,
+        )
+
+    logger.info("=" * 100)
+    logger.info("BACKFILL SUMMARY")
+    logger.info("=" * 100)
+    logger.info(
+        "Underlying Symbol          : %s",
+        underlying_symbol
+    )
+    logger.info(
+        "Total instruments          : %d",
+        total
+    )
+    logger.info(
+        "Total rows written         : %d",
+        total_rows_written
+    )
+    logger.info(
+        "Total stale-underlying     : %d",
+        total_stale
+    )
+    logger.info(
+        "Total rows with solved IV : %d",
+        total_rows_written - total_stale
+    )
 
     logger.info(
         "Done. %d instruments processed, %d rows written total (%d flagged stale_underlying_price).",
-        total, total_rows_written, total_stale,
+        total,
+        total_rows_written,
+        total_stale,
     )
+
+    logger.info("=" * 100)
+    logger.info(
+        "OPTION BACKFILL COMPLETED FOR %s",
+        underlying_symbol
+    )
+    logger.info("=" * 100)
 
 
 def main() -> None:

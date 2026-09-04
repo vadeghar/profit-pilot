@@ -6,6 +6,7 @@ historical backtest must be able to resolve contracts after expiry.
 
 from __future__ import annotations
 
+import logging
 from datetime import date, datetime
 from typing import Any
 
@@ -13,8 +14,10 @@ from sqlalchemy import text
 
 from db.config import engine
 
+logger = logging.getLogger(__name__)
 
-def get_expiry_pair(entry_date: date) -> tuple[date, date] | None:
+
+def get_expiry_pair(entry_date: date, underlying_symbol: str = "NIFTY 50") -> tuple[date, date] | None:
     """Return the later weekly expiry and following monthly expiry.
 
     The first weekly expiry on/after Monday is normally the next-day expiry,
@@ -24,16 +27,41 @@ def get_expiry_pair(entry_date: date) -> tuple[date, date] | None:
         """
         SELECT expiry_date, expiry_type
         FROM nifty_expiry_calendar
-        WHERE underlying = 'NIFTY'
+        WHERE underlying = :underlying
           AND expiry_date >= :entry_date
         ORDER BY expiry_date
         """
     )
     with engine.connect() as conn:
-        rows = conn.execute(query, {"entry_date": entry_date}).mappings().all()
+        rows = conn.execute(
+            query, {"underlying": underlying_symbol, "entry_date": entry_date}
+        ).mappings().all()
+
+    if not rows:
+        # Was previously hardcoded to 'NIFTY' regardless of what's actually in
+        # the table, causing this to silently return None on every Monday --
+        # if it's still empty after parameterizing, log exactly what values
+        # ARE present so the mismatch is a one-line log read, not a guess.
+        with engine.connect() as conn:
+            distinct = conn.execute(
+                text("SELECT DISTINCT underlying FROM nifty_expiry_calendar LIMIT 5")
+            ).fetchall()
+        logger.warning(
+            "[%s] No nifty_expiry_calendar rows for underlying=%r on/after %s. "
+            "Values actually present in that table's underlying column: %s -- "
+            "if this doesn't include %r, update MatrixCalendarStrategy.underlying "
+            "or pass the matching value explicitly.",
+            entry_date, underlying_symbol, entry_date,
+            [d[0] for d in distinct], underlying_symbol,
+        )
+        return None
 
     weekly_dates = [r["expiry_date"] for r in rows if r["expiry_type"] == "WEEKLY"]
     if len(weekly_dates) < 2:
+        logger.warning(
+            "[%s] Only %d weekly expiries found for underlying=%r on/after %s (need 2)",
+            entry_date, len(weekly_dates), underlying_symbol, entry_date,
+        )
         return None
     weekly = weekly_dates[1]
     monthly = next(
@@ -45,6 +73,10 @@ def get_expiry_pair(entry_date: date) -> tuple[date, date] | None:
         None,
     )
     if monthly is None:
+        logger.warning(
+            "[%s] No monthly expiry after weekly=%s for underlying=%r",
+            entry_date, weekly, underlying_symbol,
+        )
         return None
     return weekly, monthly
 

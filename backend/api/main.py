@@ -262,7 +262,7 @@ def backtest_strategy_stream(
                     "running_pnl": round(sum(x.pnl for x in trades), 2),
                     "running_win_rate": round(wins / len(trades) * 100, 2),
                 }
-                yield f"event: trade\ndata: {json.dumps(payload)}\n\n"
+                yield f"event: trade\ndata: {json.dumps(payload, default=str)}\n\n"
 
             summary = BacktestSummary(strategy_name=strat.name, trades=trades)
             _last_summary[strategy_id] = {"summary": summary, "run_at": datetime.utcnow()}

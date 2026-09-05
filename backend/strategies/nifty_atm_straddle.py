@@ -3,12 +3,19 @@ Strategy: NIFTY ATM CE + PE Long Straddle Strategy
 (strategy_id NK_CAS_NIFTY_ATM_STRADDLE_2PM_V1). See
 NIFTY_ATM_STRADDLE.md for the full spec this implements.
 
+V2 entry change:
+  - Initial entry is no longer restricted to 2:00 PM or later.
+  - From market open, the strategy continuously checks only India VIX < 15
+    and combined CE + PE premium <= 50.
+  - The first observation satisfying both conditions triggers entry.
+  - The 15:35 force-exit remains unchanged.
+
 Why this doesn't subclass strategies.base.OptionsStrategy:
 The generic engine (backtest/engine.py) assumes one fixed entry timestamp
 per trade, a static set of legs built once at entry, and a single full
 exit. This strategy instead:
-  - polls continuously from 2:00 PM for its entry condition (VIX + premium
-    thresholds), rather than entering at a fixed clock time;
+  - polls continuously from market open for its entry condition (VIX + premium
+    thresholds);
   - adds legs twice more intraday (2A, 2B averaging);
   - exits partially at each target level, then protects the remainder
     with a cost-based stop;
@@ -18,33 +25,20 @@ backtest runner in backend/backtest/atm_straddle_engine.py, which adapts
 its richer trade record into the generic TradeResult shape so the
 existing Strategy screen / BacktestModal UI renders it unchanged.
 
-v1 scope decisions (flag if these need revisiting):
+v1 scope decisions retained in v2:
   - Current week's expiry (nearest expiry >= trading_date) is used for
-    the CE/PE legs. The spec doesn't pin this down explicitly, but pairs
-    naturally with the deploy-mode "expiry day only" restriction -- on an
-    expiry day, the nearest expiry >= trading_date IS trading_date.
+    the CE/PE legs.
   - India VIX is read from instruments.underlying_symbol == 'INDIA VIX',
-    instrument_type == 'INDEX'. Adjust VIX_UNDERLYING below if your DB
-    uses a different symbol/convention for the VIX index row.
-  - ATM strike = nearest available strike (from the instruments table,
-    not a hard-coded 50-point rounding) to NIFTY spot at the moment the
-    time / VIX / premium entry conditions are all first satisfied.
-  - Intrabar execution policy (spec Section 14's note that a single 1-min
-    candle can cross multiple levels): resolved deterministically by
-    evaluating, per candle, in the exact priority order of Section 14 --
-    force-exit -> hard SL -> cost exit -> target -> 2A -> 2B -- and using
-    the WORST-CASE extreme of the candle for each check's direction:
-    hard SL / averaging triggers (premium falling) use the combined
-    LOW-proxy (CE.low + PE.low); target checks (premium rising) use the
-    combined HIGH-proxy (CE.high + PE.high). This is a conservative
-    approximation, since CE and PE highs/lows aren't necessarily
-    coincident within the same minute -- a documented v1 choice, same
-    spirit as blaze_butterfly.py's own documented v1 decisions. Revisit
-    with tick data if the approximation matters for your P&L.
-  - This IS the single deterministic state machine described in the
-    spec's Section 25: run_strategy_for_day() below is meant to be
-    called identically by the backtest runner and by a future live
-    deployment runner -- only the `mode` eligibility gate differs.
+    instrument_type == 'INDEX'.
+  - ATM strike = nearest available strike to NIFTY spot at the moment the
+    VIX / premium entry conditions are first satisfied.
+  - Intrabar execution policy remains the same deterministic v1 policy:
+    force-exit -> hard SL -> cost exit -> target -> 2A -> 2B, using the
+    combined LOW proxy for falling-premium checks and combined HIGH proxy
+    for rising-premium checks.
+  - run_strategy_for_day() remains the single state machine used by both
+    backtest and future live deployment; only the deploy eligibility gate
+    differs.
 """
 import logging
 from dataclasses import dataclass, field
@@ -61,11 +55,9 @@ STRATEGY_ID = "NK_CAS_NIFTY_ATM_STRADDLE_2PM_V1"
 STRATEGY_START_DATE = date(2026, 8, 3)
 
 UNDERLYING = "NIFTY 50"
-# ASSUMPTION (flag if wrong): India VIX is stored as its own INDEX-type
-# instrument row under this underlying_symbol.
 VIX_UNDERLYING = "INDIA VIX"
 
-ENTRY_WINDOW_START = time(14, 0)
+MARKET_OPEN_TIME = time(9, 15)
 FORCE_EXIT_TIME = time(15, 35)
 MARKET_TZ = ZoneInfo("Asia/Kolkata")
 
@@ -103,7 +95,7 @@ class StrategyState(str, Enum):
     CLOSED = "CLOSED"
     NOT_APPLICABLE = "NOT_APPLICABLE"
     NOT_DEPLOYED_NON_EXPIRY_DAY = "NOT_DEPLOYED_NON_EXPIRY_DAY"
-    NO_ENTRY = "NO_ENTRY"  # eligible day, but entry conditions were never met
+    NO_ENTRY = "NO_ENTRY"
 
 
 @dataclass
@@ -161,21 +153,15 @@ class StraddleTradeRecord:
     pe_lots_sold: int = 0
 
     realized_pnl: float = 0.0
-    charges: Optional[float] = None  # no charges model yet -- left NULL per spec
+    charges: Optional[float] = None
     net_pnl: Optional[float] = None
 
     status: str = StrategyState.NO_ENTRY.value
 
-    # Internal bookkeeping (not part of the Section 23 schema) used to
-    # compute P&L incrementally and to render a leg-by-leg fill list for
-    # the UI adapter in backend/backtest/atm_straddle_engine.py.
     fills: list = field(default_factory=list)
 
     @property
     def total_premium_outlay(self) -> float:
-        """Total premium paid across all BUY fills -- used as the capital
-        base for pnl_pct, since this is a long-premium strategy (no
-        separate margin requirement to model)."""
         if not self.lot_size:
             return 0.0
         return sum(f["price"] * f["lots"] * self.lot_size for f in self.fills if f["action"] == "BUY")
@@ -190,12 +176,10 @@ class StraddleTradeRecord:
 
 class NiftyATMStraddleStrategy:
     """Thin descriptor so this strategy can sit in api/main.py's STRATEGIES
-    dict next to the OptionsStrategy-based strategies, without pretending
-    to share their fixed-entry/fixed-legs engine (see module docstring).
-    """
+    dict next to the OptionsStrategy-based strategies."""
     name = "NIFTY ATM Straddle"
     underlying = UNDERLYING
-    frequency = "Daily \u00b7 2:00 PM entry"
+    frequency = "Daily · entry when VIX < 15 and premium <= 50"
     strategy_id = STRATEGY_ID
     strategy_start_date = STRATEGY_START_DATE
 
@@ -210,8 +194,6 @@ def _market_time(ts: datetime) -> time:
 
 
 def _current_week_expiry(trading_date: date) -> Optional[date]:
-    """Nearest CE expiry on/after trading_date -- on an expiry day itself,
-    this IS trading_date."""
     expiries = repo.get_weekly_expiries(UNDERLYING, "CE", on_or_after=trading_date, limit=1)
     return expiries[0] if expiries else None
 
@@ -235,13 +217,10 @@ def _exit_all(record: StraddleTradeRecord, ts: datetime, ce_close: float, pe_clo
     record.final_exit_timestamp = ts
     record.final_exit_reason = reason
     record.realized_pnl = _compute_pnl(record)
-    record.net_pnl = record.realized_pnl  # no charges model yet
+    record.net_pnl = record.realized_pnl
 
 
 def _compute_pnl(record: StraddleTradeRecord) -> float:
-    """Every fill is against the same locked CE/PE contracts, so summing
-    signed cash flows (SELL positive, BUY negative) gives the correct net
-    P&L regardless of how many averaging/partial-exit batches occurred."""
     if not record.lot_size:
         return 0.0
     total = 0.0
@@ -252,14 +231,16 @@ def _compute_pnl(record: StraddleTradeRecord) -> float:
 
 
 def run_strategy_for_day(trading_date: date, mode: Mode = Mode.BACKTEST) -> StraddleTradeRecord:
-    """Section 17's pseudocode, implemented against 1-min candles.
-    Returns a StraddleTradeRecord regardless of outcome; check `.status`
-    (StrategyState values) to see what happened -- CLOSED means a trade
-    actually ran; everything else means no trade was taken that day.
+    """Run the V2 state machine against 1-minute candles.
+
+    Initial entry is evaluated from market open (09:15) until 15:35. The
+    entry gate is ONLY:
+        India VIX < 15
+        combined CE + PE premium <= 50
+    No time-of-day entry restriction remains.
     """
     record = StraddleTradeRecord(trading_date=trading_date, mode=mode.value)
 
-    # -- Section 3: applicability --
     if trading_date < STRATEGY_START_DATE:
         record.status = StrategyState.NOT_APPLICABLE.value
         return record
@@ -268,7 +249,6 @@ def run_strategy_for_day(trading_date: date, mode: Mode = Mode.BACKTEST) -> Stra
     record.expiry_date = expiry
     record.is_expiry_day = (expiry == trading_date) if expiry else None
 
-    # -- Section 5: deploy-mode eligibility gate --
     if mode == Mode.DEPLOY and not record.is_expiry_day:
         record.status = StrategyState.NOT_DEPLOYED_NON_EXPIRY_DAY.value
         return record
@@ -284,15 +264,12 @@ def run_strategy_for_day(trading_date: date, mode: Mode = Mode.BACKTEST) -> Stra
         if index_id is None:
             logger.warning("[%s] SKIP: no INDEX instrument row for underlying=%s", trading_date, UNDERLYING)
         if vix_id is None:
-            logger.warning(
-                "[%s] SKIP: no INDEX instrument row for underlying=%s -- adjust VIX_UNDERLYING "
-                "if your DB uses a different symbol", trading_date, VIX_UNDERLYING,
-            )
+            logger.warning("[%s] SKIP: no INDEX instrument row for underlying=%s", trading_date, VIX_UNDERLYING)
         record.status = StrategyState.NO_ENTRY.value
         return record
 
     entry_window_end = datetime.combine(trading_date, FORCE_EXIT_TIME)
-    day_start = datetime.combine(trading_date, ENTRY_WINDOW_START)
+    day_start = datetime.combine(trading_date, MARKET_OPEN_TIME)
 
     spot_df = repo.get_candles(index_id, day_start, entry_window_end)
     vix_df = repo.get_candles(vix_id, day_start, entry_window_end)
@@ -302,7 +279,9 @@ def run_strategy_for_day(trading_date: date, mode: Mode = Mode.BACKTEST) -> Stra
     spot_df = spot_df.set_index("ts")
     vix_df = vix_df.set_index("ts")
 
-    # -- Section 7: initial entry search (continuous polling from 14:00) --
+    # Initial entry search starts at market open. There is intentionally no
+    # 14:00/time gate: the first observation with VIX < 15 and premium <= 50
+    # is the entry.
     entry_ts = None
     locked_atm_strike = ce_instr = pe_instr = lot_size = None
     ce_price_at_entry = pe_price_at_entry = combined_at_entry = None
@@ -370,12 +349,8 @@ def run_strategy_for_day(trading_date: date, mode: Mode = Mode.BACKTEST) -> Stra
     common_ts = sorted(set(ce_df.index) & set(pe_df.index))
 
     for ts in common_ts:
-        # The entry candle has already been consumed at the initial entry
-        # price. Do not let its OHLC range immediately trigger 2A/2B or a
-        # target; lifecycle rules begin with the next observation.
         if ts <= entry_ts:
             continue
-        # -- Section 13: force exit, checked first every observation --
         if _market_time(ts) >= FORCE_EXIT_TIME:
             ce_close = float(ce_df.loc[ts, "close"])
             pe_close = float(pe_df.loc[ts, "close"])
@@ -389,7 +364,6 @@ def run_strategy_for_day(trading_date: date, mode: Mode = Mode.BACKTEST) -> Stra
         combined_low = float(ce_bar["low"]) + float(pe_bar["low"])
         combined_high = float(ce_bar["high"]) + float(pe_bar["high"])
 
-        # -- Section 12: hard stop, independent of stage --
         if combined_low <= HARD_STOP_PREMIUM:
             _exit_all(record, ts, ce_close, pe_close, ce_lots, pe_lots, "HARD_STOP_LOSS")
             record.hard_sl_timestamp = ts
@@ -397,13 +371,11 @@ def run_strategy_for_day(trading_date: date, mode: Mode = Mode.BACKTEST) -> Stra
             record.status = StrategyState.CLOSED.value
             return record
 
-        # -- Section 11: cost exit, only once a target has already fired --
         if target_done and combined_low <= cost_premium:
             _exit_all(record, ts, ce_close, pe_close, ce_lots, pe_lots, "COST_EXIT")
             record.status = StrategyState.CLOSED.value
             return record
 
-        # -- Section 10: target rules (one per state, each fires once) --
         if state == StrategyState.INITIAL and combined_high >= INITIAL_TARGET:
             ce_lots -= 1
             pe_lots -= 1
@@ -446,7 +418,6 @@ def run_strategy_for_day(trading_date: date, mode: Mode = Mode.BACKTEST) -> Stra
             record.status = state.value
             continue
 
-        # -- Section 8: 2A averaging entry (only once, only from INITIAL) --
         if state == StrategyState.INITIAL and not level_2a_done and combined_low <= LEVEL_2A_MAX_PREMIUM:
             ce_lots += LEVEL_2A_ADD_LOTS
             pe_lots += LEVEL_2A_ADD_LOTS
@@ -462,7 +433,6 @@ def run_strategy_for_day(trading_date: date, mode: Mode = Mode.BACKTEST) -> Stra
             record.status = state.value
             continue
 
-        # -- Section 9: 2B averaging entry (only once, only from AFTER_2A) --
         if state == StrategyState.AFTER_2A and not level_2b_done and combined_low <= LEVEL_2B_MAX_PREMIUM:
             ce_lots += LEVEL_2B_ADD_LOTS
             pe_lots += LEVEL_2B_ADD_LOTS
@@ -478,8 +448,6 @@ def run_strategy_for_day(trading_date: date, mode: Mode = Mode.BACKTEST) -> Stra
             record.status = state.value
             continue
 
-    # Ran out of candle data before 15:35 (partial/missing day) -- close at
-    # the last available mark rather than silently leaving a position open.
     if common_ts:
         last_ts = common_ts[-1]
         ce_close = float(ce_df.loc[last_ts, "close"])

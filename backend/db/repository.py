@@ -25,6 +25,14 @@ from .config import engine
 MARKET_TZ = ZoneInfo("Asia/Kolkata")
 MARKET_OPEN_TIME = time(9, 15)
 MARKET_CLOSE_TIME = time(15, 35)
+EXPECTED_MARKET_MINUTES = 381
+
+
+def _market_aware(value: datetime) -> datetime:
+    """Interpret naive strategy boundaries as Asia/Kolkata market time."""
+    if value.tzinfo is None:
+        return value.replace(tzinfo=MARKET_TZ)
+    return value.astimezone(MARKET_TZ)
 
 
 def get_instrument(
@@ -63,25 +71,25 @@ def get_index_instrument_id(
     underlying_symbol: str,
     trading_date: Optional[date] = None,
 ) -> Optional[int]:
-    """Resolve the INDEX instrument used for a trading day.
+    """Resolve the best active INDEX instrument instead of unordered LIMIT 1.
 
-    The instrument master can contain duplicate/partial historical INDEX
-    rows for the same underlying.  A plain ``LIMIT 1`` is therefore unsafe.
-    When a trading date is supplied, choose the active candidate with the
-    strongest candle coverage for the complete Indian market session,
-    preferring a complete 09:15-15:35 series and then the highest count.
-    Without a date, retain a deterministic active-row fallback for legacy
-    callers.
+    Historical instrument masters can contain duplicate/partial rows for the
+    same index (as happened for INDIA VIX). With a date, prefer a complete
+    09:15-15:35 session and otherwise choose the candidate with the most
+    candles in that session. Without a date, choose the active candidate with
+    the greatest total candle count, then the lowest id for determinism.
     """
     if trading_date is None:
         query = text(
             """
-            SELECT id
-            FROM instruments
-            WHERE underlying_symbol = :underlying
-              AND instrument_type = 'INDEX'
-              AND is_active = true
-            ORDER BY id ASC
+            SELECT i.id
+            FROM instruments i
+            LEFT JOIN candles_1min c ON c.instrument_id = i.id
+            WHERE i.underlying_symbol = :underlying
+              AND i.instrument_type = 'INDEX'
+              AND i.is_active = true
+            GROUP BY i.id
+            ORDER BY COUNT(c.ts) DESC, i.id ASC
             LIMIT 1
             """
         )
@@ -109,7 +117,7 @@ def get_index_instrument_id(
         GROUP BY i.id
         ORDER BY
             CASE
-                WHEN COUNT(c.ts) >= 381
+                WHEN COUNT(c.ts) = :expected_count
                  AND MIN(c.ts) = :start
                  AND MAX(c.ts) = :end
                 THEN 0 ELSE 1
@@ -122,13 +130,35 @@ def get_index_instrument_id(
     with engine.connect() as conn:
         row = conn.execute(
             query,
-            {"underlying": underlying_symbol, "start": start, "end": end},
+            {
+                "underlying": underlying_symbol,
+                "start": start,
+                "end": end,
+                "expected_count": EXPECTED_MARKET_MINUTES,
+            },
         ).fetchone()
     return int(row[0]) if row else None
 
 
-def get_candles(instrument_id: int, start: datetime, end: datetime) -> pd.DataFrame:
-    """1-min OHLCV for one instrument between start and end, ascending."""
+def get_candles(
+    instrument_id: int,
+    start: datetime,
+    end: datetime,
+    fill_index_gaps: bool = False,
+) -> pd.DataFrame:
+    """1-min OHLCV for one instrument between start and end, ascending.
+
+    When ``fill_index_gaps=True``, the requested range is aligned to every
+    expected minute and missing INDEX candles are resolved using the previous
+    available candle only. No future candle is consulted, avoiding look-ahead
+    bias in historical strategy replay. ``source_ts`` records the actual
+    source candle used for each resolved minute.
+
+    LIVE DEPLOYMENT NOTE: live deployment will use broker API market data;
+    this historical fallback should normally never be exercised there.
+    """
+    start = _market_aware(start)
+    end = _market_aware(end)
     query = text(
         """
         SELECT ts, open, high, low, close, volume, open_interest
@@ -138,45 +168,16 @@ def get_candles(instrument_id: int, start: datetime, end: datetime) -> pd.DataFr
         """
     )
     with engine.connect() as conn:
-        return pd.read_sql(query, conn, params={"iid": instrument_id, "start": start, "end": end})
+        raw = pd.read_sql(query, conn, params={"iid": instrument_id, "start": start, "end": end})
 
-
-def get_aligned_index_candles(
-    underlying_symbol: str,
-    trading_date: date,
-    start_time: time = MARKET_OPEN_TIME,
-    end_time: time = MARKET_CLOSE_TIME,
-) -> pd.DataFrame:
-    """Return an index series on every expected market minute.
-
-    Exact candle is always preferred. If an expected minute is missing,
-    carry forward the previous available candle. This is intentionally a
-    *previous-only* fallback: it never uses a future candle and therefore
-    introduces no look-ahead bias in the backtest.
-
-    ``source_ts`` records the actual candle timestamp used for each resolved
-    minute, allowing diagnostics to distinguish exact data from a fallback.
-
-    LIVE DEPLOYMENT NOTE: the deployed strategy will consume live broker API
-    ticks/candles, so this historical-data gap fallback should normally never
-    be exercised. Keep this fallback for backtesting/replay robustness only.
-    """
-    start = datetime.combine(trading_date, start_time, tzinfo=MARKET_TZ)
-    end = datetime.combine(trading_date, end_time, tzinfo=MARKET_TZ)
-    instrument_id = get_index_instrument_id(underlying_symbol, trading_date=trading_date)
-    if instrument_id is None:
-        return pd.DataFrame()
-
-    raw = get_candles(instrument_id, start, end)
-    if raw.empty:
+    if not fill_index_gaps or raw.empty:
         return raw
 
     raw["ts"] = pd.to_datetime(raw["ts"], utc=True)
     raw = raw.drop_duplicates(subset=["ts"], keep="last").set_index("ts").sort_index()
-    expected = pd.date_range(start=start, end=end, freq="1min", tz="UTC")
+    expected = pd.date_range(start=start.astimezone(ZoneInfo("UTC")), end=end.astimezone(ZoneInfo("UTC")), freq="1min")
     aligned = raw.reindex(expected)
-    aligned["source_ts"] = aligned.index.to_series().where(~aligned["close"].isna())
-    aligned["source_ts"] = aligned["source_ts"].ffill()
+    aligned["source_ts"] = aligned.index.to_series().where(~aligned["close"].isna()).ffill()
     value_columns = ["open", "high", "low", "close", "volume", "open_interest"]
     aligned[value_columns] = aligned[value_columns].ffill()
     aligned = aligned.dropna(subset=["close"])
@@ -184,8 +185,24 @@ def get_aligned_index_candles(
     return aligned.reset_index()
 
 
+def get_index_candles(
+    underlying_symbol: str,
+    trading_date: date,
+    start_time: time = MARKET_OPEN_TIME,
+    end_time: time = MARKET_CLOSE_TIME,
+) -> pd.DataFrame:
+    """Fetch a date's INDEX candles with previous-minute gap resolution."""
+    instrument_id = get_index_instrument_id(underlying_symbol, trading_date=trading_date)
+    if instrument_id is None:
+        return pd.DataFrame()
+    start = datetime.combine(trading_date, start_time, tzinfo=MARKET_TZ)
+    end = datetime.combine(trading_date, end_time, tzinfo=MARKET_TZ)
+    return get_candles(instrument_id, start, end, fill_index_gaps=True)
+
+
 def get_price_at_or_before(instrument_id: int, ts: datetime) -> Optional[float]:
     """Close of the most recent 1-min candle at/just-before ts."""
+    ts = _market_aware(ts)
     query = text(
         """
         SELECT close FROM candles_1min
@@ -199,10 +216,8 @@ def get_price_at_or_before(instrument_id: int, ts: datetime) -> Optional[float]:
 
 
 def get_spot_price_at(underlying_symbol: str, ts: datetime) -> Optional[float]:
-    """Underlying index close at/just-before ts (instrument_type = 'INDEX').
-    Used once per week (position entry) -- for per-minute lookups during a
-    trade's lifetime, use get_index_instrument_id() + get_candles() once and
-    forward-fill instead; see backtest/engine.py."""
+    """Underlying index close at/just-before ts (instrument_type = 'INDEX')."""
+    ts = _market_aware(ts)
     query = text(
         """
         SELECT c.close

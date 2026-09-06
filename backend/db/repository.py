@@ -53,7 +53,7 @@ def get_instrument(underlying_symbol: str, instrument_type: str, expiry: date, s
 
 
 def get_weekly_expiries(underlying_symbol: str, instrument_type: str = "CE", on_or_after: Optional[date] = None, limit: int = 20) -> list[date]:
-    """Return NIFTY weekly expiry dates from nifty_expiry_calendar.
+    """Return NIFTY expiry dates (weekly or monthly) from nifty_expiry_calendar.
 
     The expiry calendar is the strategy source of truth. For NIFTY, the
     instrument master name 'NIFTY 50' maps to calendar underlying 'NIFTY'.
@@ -66,7 +66,7 @@ def get_weekly_expiries(underlying_symbol: str, instrument_type: str = "CE", on_
         SELECT expiry_date
         FROM public.nifty_expiry_calendar
         WHERE underlying = :underlying
-          AND expiry_type = 'WEEKLY'
+          AND expiry_type IN ('WEEKLY', 'MONTHLY')
           AND (
                 :on_or_after IS NULL
                 OR expiry_date >= :on_or_after
@@ -218,7 +218,7 @@ def get_trading_days(underlying_symbol: str, start: date, end: date) -> list[dat
         SELECT DISTINCT c.ts::date AS d
         FROM candles_1min c
         JOIN instruments i ON i.id = c.instrument_id
-        WHERE i.underlying_symbol = :underlying AND i.instrument_type = 'INDEX'
+        WHERE i.underlying_symbol = :underlying
           AND c.ts::date BETWEEN :start AND :end
         ORDER BY d ASC
     """)

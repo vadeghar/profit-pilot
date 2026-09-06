@@ -1,8 +1,11 @@
 """Date-scoped diagnostic logger for the V2 NIFTY ATM entry scan."""
 from datetime import date, datetime, time
 from pathlib import Path
+import logging
 
 from db import repository as repo
+
+logger = logging.getLogger(__name__)
 
 UNDERLYING = "NIFTY 50"
 VIX_UNDERLYING = "INDIA VIX"
@@ -18,6 +21,12 @@ def run_entry_debug_log(trading_date: date) -> None:
     """Write the complete V2 entry scan for the diagnostic date only."""
     if trading_date != DEBUG_DATE:
         return
+
+    logger.info(
+        "[NIFTY ATM V2 DEBUG] Starting entry scan for %s | output=%s",
+        trading_date,
+        LOG_PATH,
+    )
 
     lines: list[str] = [
         "=" * 180,
@@ -91,6 +100,10 @@ def run_entry_debug_log(trading_date: date) -> None:
         )
         if combined <= INITIAL_MAX_PREMIUM:
             lines.append(f"ENTRY_WOULD_BE_TAKEN={ts} | ATM={strike} | CE={ce_p:.2f} | PE={pe_p:.2f} | SUM={combined:.2f} | VIX={vix:.4f}")
+            logger.info(
+                "[NIFTY ATM V2 DEBUG] ENTRY_WOULD_BE_TAKEN=%s | ATM=%s | CE=%.2f | PE=%.2f | SUM=%.2f | VIX=%.4f",
+                ts, strike, ce_p, pe_p, combined, vix,
+            )
             break
 
     lines.append("=== V2 INITIAL ENTRY SCAN END ===")
@@ -100,3 +113,4 @@ def run_entry_debug_log(trading_date: date) -> None:
 def _write(lines: list[str]) -> None:
     LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     LOG_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    logger.info("[NIFTY ATM V2 DEBUG] Entry diagnostic written: %s", LOG_PATH)

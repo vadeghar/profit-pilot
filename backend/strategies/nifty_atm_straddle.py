@@ -14,6 +14,10 @@ V3 entry change ("3pm is my price"):
   - Once entered, all averaging, target, cost-exit, hard-stop and 15:35
     force-exit rules remain unchanged.
 
+V4 strike selection change:
+  - ATM strikes are rounded to the nearest 100-point strike; 50-point
+    strikes are never selected.
+
 Scope:
   - This strategy is STRICTLY for NIFTY expiry trading days.
   - Expiry eligibility and actual expiry dates come from
@@ -33,6 +37,7 @@ of legs built once at entry, and a single full exit. This strategy instead:
   - runs its own state machine and backtest adapter.
 """
 import logging
+import math
 from dataclasses import dataclass, field
 from datetime import date, datetime, time
 from enum import Enum
@@ -62,6 +67,11 @@ INITIAL_TARGET = 100.0
 LEVEL_2A_TARGET = 65.0
 LEVEL_2B_TARGET = 45.0
 HARD_STOP_PREMIUM = 8.0
+
+
+def preferred_atm_strike(spot: float) -> float:
+    """Round NIFTY spot to the nearest 100-point strike, never a 50-point strike."""
+    return float(math.floor(spot / 100.0 + 0.5) * 100)
 INITIAL_LOTS = 2
 LEVEL_2A_ADD_LOTS = 2
 LEVEL_2B_ADD_LOTS = 2
@@ -258,7 +268,7 @@ def run_strategy_for_day(trading_date: date, mode: Mode = Mode.BACKTEST) -> Stra
             continue
 
         spot = float(spot_df.loc[ts, "close"])
-        strike = repo.get_nearest_strike(UNDERLYING, "CE", expiry, spot)
+        strike = preferred_atm_strike(spot)
         if strike is None:
             continue
         ce_candidate = repo.get_instrument(UNDERLYING, "CE", expiry, strike)

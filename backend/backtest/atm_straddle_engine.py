@@ -66,7 +66,7 @@ def iter_trades(strategy: NiftyATMStraddleStrategy, start: date, end: date) -> I
     debug_log_path = create_run_log_path()
 
     logger.info(
-        "[NIFTY ATM V3 DEBUG] Backtest diagnostic logging enabled | "
+        "[NIFTY ATM V4 DEBUG] Backtest diagnostic logging enabled | "
         "expiry-days-only | range=%s..%s | output=%s",
         start,
         end,
@@ -75,7 +75,7 @@ def iter_trades(strategy: NiftyATMStraddleStrategy, start: date, end: date) -> I
 
     with debug_log_path.open("w", encoding="utf-8") as handle:
         handle.write(
-            "NIFTY ATM STRADDLE V3 BACKTEST ENTRY DIAGNOSTIC\n"
+            "NIFTY ATM STRADDLE V4 BACKTEST ENTRY DIAGNOSTIC\n"
             f"RUN_STARTED_IST={datetime.now(MARKET_TZ).strftime('%Y-%m-%d %H:%M:%S IST')}\n"
             f"REQUESTED_RANGE={start}..{end}\n"
             "SCOPE=NIFTY WEEKLY OR MONTHLY EXPIRY DAYS ONLY\n"
@@ -95,7 +95,7 @@ def iter_trades(strategy: NiftyATMStraddleStrategy, start: date, end: date) -> I
             run_entry_debug_log(trading_date, debug_log_path)
         except Exception:
             logger.exception(
-                "[NIFTY ATM V3 DEBUG] Entry diagnostic failed for expiry date %s; continuing backtest",
+                "[NIFTY ATM V4 DEBUG] Entry diagnostic failed for expiry date %s; continuing backtest",
                 trading_date,
             )
             with debug_log_path.open("a", encoding="utf-8") as handle:

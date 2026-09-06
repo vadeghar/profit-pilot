@@ -1,4 +1,4 @@
-# NIFTY ATM CE + PE Long Straddle Strategy — V3
+# NIFTY ATM CE + PE Long Straddle Strategy — V4
 
 **Theme:** 3 PM is my price
 
@@ -14,6 +14,10 @@ The first entry occurs when:
 - ATM CE + ATM PE combined premium <= 50
 
 ATM is determined from the NIFTY spot observed at that entry time and then locked.
+
+ATM strike selection always uses the nearest 100-point strike. 50-point strikes
+are ignored. For example, spot 24,556 selects 24,600 and spot 24,548 selects
+24,500.
 
 ### 3:01 PM fallback entry
 

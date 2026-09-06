@@ -1,7 +1,8 @@
-"""Diagnostic logger for the NIFTY ATM Straddle V3 expiry-day entry scan."""
+"""Diagnostic logger for the NIFTY ATM Straddle V4 expiry-day entry scan."""
 from datetime import date, datetime, time
 from pathlib import Path
 import logging
+import math
 from zoneinfo import ZoneInfo
 
 from db import repository as repo
@@ -15,6 +16,11 @@ FORCE_EXIT = time(15, 35)
 VIX_MAX = 15.0
 INITIAL_MAX_PREMIUM = 50.0
 MARKET_TZ = ZoneInfo("Asia/Kolkata")
+
+
+def preferred_atm_strike(spot: float) -> float:
+    """Round NIFTY spot to the nearest 100-point strike, never a 50-point strike."""
+    return float(math.floor(spot / 100.0 + 0.5) * 100)
 
 
 def create_run_log_path() -> Path:
@@ -38,13 +44,13 @@ def run_entry_debug_log(trading_date: date, log_path: Path) -> None:
     expiry = expiries[0]
 
     logger.info(
-        "[NIFTY ATM V3 DEBUG] Running EXPIRY-DAY entry scan for %s | output=%s",
+        "[NIFTY ATM V4 DEBUG] Running EXPIRY-DAY entry scan for %s | output=%s",
         trading_date, log_path,
     )
     lines: list[str] = [
         "=" * 200,
-        f"NIFTY ATM STRADDLE V3 ENTRY DEBUG | EXPIRY DATE={trading_date}",
-        f"Window={MARKET_OPEN} -> {FORCE_EXIT} IST | Normal: VIX < {VIX_MAX} and Combined CE+PE <= {INITIAL_MAX_PREMIUM} | Forced initial entry: {FORCED_INITIAL_ENTRY} IST when VIX < {VIX_MAX}",
+        f"NIFTY ATM STRADDLE V4 ENTRY DEBUG | EXPIRY DATE={trading_date}",
+        f"Window={MARKET_OPEN} -> {FORCE_EXIT} IST | ATM strikes rounded to 100s | Normal: VIX < {VIX_MAX} and Combined CE+PE <= {INITIAL_MAX_PREMIUM} | Forced initial entry: {FORCED_INITIAL_ENTRY} IST when VIX < {VIX_MAX}",
         "SCOPE=NIFTY WEEKLY OR MONTHLY EXPIRY DAYS ONLY",
         "Index data policy=EXACT -> PREVIOUS AVAILABLE CANDLE (NO LOOK-AHEAD)",
         "Live deployment note: live deployment will use broker API market data; historical gap fallback should normally never be exercised.",
@@ -94,7 +100,7 @@ def run_entry_debug_log(trading_date: date, log_path: Path) -> None:
         if vix >= VIX_MAX:
             lines.append(f"{_market_ts(ts)} | {vix:.4f} | {vix_source_text} | {spot:.2f} | {nifty_source_text} | RESULT=SKIP_VIX | DATA={fallback_text}")
             continue
-        strike = repo.get_nearest_strike(UNDERLYING, "CE", expiry, spot)
+        strike = preferred_atm_strike(spot)
         if strike is None:
             lines.append(f"{_market_ts(ts)} | {vix:.4f} | {vix_source_text} | {spot:.2f} | {nifty_source_text} | RESULT=SKIP_NO_ATM_STRIKE | DATA={fallback_text}")
             continue
@@ -126,11 +132,11 @@ def run_entry_debug_log(trading_date: date, log_path: Path) -> None:
             entry_reason = "INITIAL_FORCED_1501" if forced_entry else "INITIAL"
             lines.append(f"ENTRY_WOULD_BE_TAKEN={_market_ts(ts)} | REASON={entry_reason} | ATM={strike} | CE={ce_p:.2f} | PE={pe_p:.2f} | SUM={combined:.2f} | VIX={vix:.4f} | VIX_SOURCE={vix_source_text} | NIFTY_SOURCE={nifty_source_text}")
             logger.info(
-                "[NIFTY ATM V3 DEBUG] ENTRY_WOULD_BE_TAKEN=%s | REASON=%s | ATM=%s | CE=%.2f | PE=%.2f | SUM=%.2f | VIX=%.4f | DATA=%s",
+                "[NIFTY ATM V4 DEBUG] ENTRY_WOULD_BE_TAKEN=%s | REASON=%s | ATM=%s | CE=%.2f | PE=%.2f | SUM=%.2f | VIX=%.4f | DATA=%s",
                 _market_ts(ts), entry_reason, strike, ce_p, pe_p, combined, vix, fallback_text,
             )
             break
-    lines.append("=== V3 INITIAL ENTRY SCAN END ===")
+    lines.append("=== V4 INITIAL ENTRY SCAN END ===")
     _write(lines, log_path)
 
 
@@ -142,4 +148,4 @@ def _write(lines: list[str], log_path: Path) -> None:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("a", encoding="utf-8") as handle:
         handle.write("\n".join(lines) + "\n")
-    logger.info("[NIFTY ATM V3 DEBUG] Entry diagnostic appended: %s", log_path)
+    logger.info("[NIFTY ATM V4 DEBUG] Entry diagnostic appended: %s", log_path)

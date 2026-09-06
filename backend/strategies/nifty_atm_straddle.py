@@ -3,11 +3,12 @@ Strategy: NIFTY ATM CE + PE Long Straddle Strategy
 (strategy_id NK_CAS_NIFTY_ATM_STRADDLE_2PM_V1). See
 NIFTY_ATM_STRADDLE.md for the full spec this implements.
 
-V2 entry change:
-  - Initial entry is no longer restricted to 2:00 PM or later.
-  - From market open, the strategy continuously checks only India VIX < 15
+V1 entry rule:
+  - Initial entry evaluation starts at 2:00 PM India time.
+  - From 2:00 PM onward, the strategy continuously checks India VIX < 15
     and combined CE + PE premium <= 50.
-  - The first observation satisfying both conditions triggers entry.
+  - The first observation at or after 2:00 PM satisfying both conditions
+    triggers entry.
   - The 15:35 force-exit remains unchanged.
 
 Scope:
@@ -21,7 +22,7 @@ Scope:
 Why this doesn't subclass strategies.base.OptionsStrategy:
 The generic engine assumes one fixed entry timestamp per trade, a static set
 of legs built once at entry, and a single full exit. This strategy instead:
-  - polls continuously from market open for its entry condition;
+  - polls continuously from 2:00 PM for its entry condition;
   - adds legs twice more intraday (2A, 2B averaging);
   - exits partially at each target level, then protects the remainder with
     a cost-based stop;
@@ -44,7 +45,7 @@ STRATEGY_START_DATE = date(2026, 8, 3)
 UNDERLYING = "NIFTY 50"
 VIX_UNDERLYING = "INDIA VIX"
 
-MARKET_OPEN_TIME = time(9, 15)
+ENTRY_WINDOW_START = time(14, 0)
 FORCE_EXIT_TIME = time(15, 35)
 MARKET_TZ = ZoneInfo("Asia/Kolkata")
 
@@ -143,7 +144,7 @@ class StraddleTradeRecord:
 class NiftyATMStraddleStrategy:
     name = "NIFTY ATM Straddle"
     underlying = UNDERLYING
-    frequency = "NIFTY weekly/monthly expiry days · entry when VIX < 15 and premium <= 50"
+    frequency = "NIFTY weekly/monthly expiry days · entry from 2:00 PM when VIX < 15 and premium <= 50"
     strategy_id = STRATEGY_ID
     strategy_start_date = STRATEGY_START_DATE
 
@@ -190,7 +191,7 @@ def _compute_pnl(record: StraddleTradeRecord) -> float:
 
 
 def run_strategy_for_day(trading_date: date, mode: Mode = Mode.BACKTEST) -> StraddleTradeRecord:
-    """Run the V2 state machine only on a NIFTY weekly or monthly expiry day."""
+    """Run the V1 state machine from 2:00 PM on a NIFTY weekly or monthly expiry day."""
     record = StraddleTradeRecord(trading_date=trading_date, mode=mode.value)
 
     if trading_date < STRATEGY_START_DATE:
@@ -226,7 +227,7 @@ def run_strategy_for_day(trading_date: date, mode: Mode = Mode.BACKTEST) -> Stra
         return record
 
     entry_window_end = datetime.combine(trading_date, FORCE_EXIT_TIME, tzinfo=MARKET_TZ)
-    day_start = datetime.combine(trading_date, MARKET_OPEN_TIME, tzinfo=MARKET_TZ)
+    day_start = datetime.combine(trading_date, ENTRY_WINDOW_START, tzinfo=MARKET_TZ)
 
     spot_df = repo.get_candles(index_id, day_start, entry_window_end)
     vix_df = repo.get_candles(vix_id, day_start, entry_window_end)

@@ -23,6 +23,7 @@ from sqlalchemy import text
 from .config import engine
 
 MARKET_TZ = ZoneInfo("Asia/Kolkata")
+UTC_TZ = ZoneInfo("UTC")
 MARKET_OPEN_TIME = time(9, 15)
 MARKET_CLOSE_TIME = time(15, 35)
 EXPECTED_MARKET_MINUTES = 381
@@ -74,10 +75,9 @@ def get_index_instrument_id(
     """Resolve the best active INDEX instrument instead of unordered LIMIT 1.
 
     Historical instrument masters can contain duplicate/partial rows for the
-    same index (as happened for INDIA VIX). With a date, prefer a complete
-    09:15-15:35 session and otherwise choose the candidate with the most
-    candles in that session. Without a date, choose the active candidate with
-    the greatest total candle count, then the lowest id for determinism.
+    same index. With a date, prefer a complete 09:15-15:35 session and then
+    the candidate with the highest candle count. Without a date, choose the
+    active candidate with the greatest total candle count, then lowest id.
     """
     if trading_date is None:
         query = text(
@@ -140,6 +140,42 @@ def get_index_instrument_id(
     return int(row[0]) if row else None
 
 
+def _is_index_instrument(instrument_id: int) -> bool:
+    query = text(
+        """
+        SELECT instrument_type = 'INDEX'
+        FROM instruments
+        WHERE id = :iid
+        LIMIT 1
+        """
+    )
+    with engine.connect() as conn:
+        row = conn.execute(query, {"iid": instrument_id}).fetchone()
+    return bool(row[0]) if row else False
+
+
+def _align_index_candles(raw: pd.DataFrame, start: datetime, end: datetime) -> pd.DataFrame:
+    """Fill missing INDEX minutes from the previous available candle only."""
+    if raw.empty:
+        return raw
+
+    raw["ts"] = pd.to_datetime(raw["ts"], utc=True)
+    raw = raw.drop_duplicates(subset=["ts"], keep="last").set_index("ts").sort_index()
+    expected = pd.date_range(
+        start=start.astimezone(UTC_TZ),
+        end=end.astimezone(UTC_TZ),
+        freq="1min",
+    )
+    aligned = raw.reindex(expected)
+    exact_mask = ~aligned["close"].isna()
+    aligned["source_ts"] = aligned.index.to_series().where(exact_mask).ffill()
+    value_columns = ["open", "high", "low", "close", "volume", "open_interest"]
+    aligned[value_columns] = aligned[value_columns].ffill()
+    aligned = aligned.dropna(subset=["close"])
+    aligned.index.name = "ts"
+    return aligned.reset_index()
+
+
 def get_candles(
     instrument_id: int,
     start: datetime,
@@ -148,11 +184,13 @@ def get_candles(
 ) -> pd.DataFrame:
     """1-min OHLCV for one instrument between start and end, ascending.
 
-    When ``fill_index_gaps=True``, the requested range is aligned to every
-    expected minute and missing INDEX candles are resolved using the previous
-    available candle only. No future candle is consulted, avoiding look-ahead
-    bias in historical strategy replay. ``source_ts`` records the actual
-    source candle used for each resolved minute.
+    INDEX candles are automatically aligned to every expected minute using
+    the previous available candle when a minute is missing. This preserves
+    the historical strategy timeline without look-ahead. Option contracts
+    remain raw unless ``fill_index_gaps`` is explicitly requested.
+
+    ``source_ts`` is included whenever alignment is performed and records the
+    actual source candle timestamp used for each resolved minute.
 
     LIVE DEPLOYMENT NOTE: live deployment will use broker API market data;
     this historical fallback should normally never be exercised there.
@@ -170,19 +208,12 @@ def get_candles(
     with engine.connect() as conn:
         raw = pd.read_sql(query, conn, params={"iid": instrument_id, "start": start, "end": end})
 
-    if not fill_index_gaps or raw.empty:
+    if raw.empty:
         return raw
 
-    raw["ts"] = pd.to_datetime(raw["ts"], utc=True)
-    raw = raw.drop_duplicates(subset=["ts"], keep="last").set_index("ts").sort_index()
-    expected = pd.date_range(start=start.astimezone(ZoneInfo("UTC")), end=end.astimezone(ZoneInfo("UTC")), freq="1min")
-    aligned = raw.reindex(expected)
-    aligned["source_ts"] = aligned.index.to_series().where(~aligned["close"].isna()).ffill()
-    value_columns = ["open", "high", "low", "close", "volume", "open_interest"]
-    aligned[value_columns] = aligned[value_columns].ffill()
-    aligned = aligned.dropna(subset=["close"])
-    aligned.index.name = "ts"
-    return aligned.reset_index()
+    if fill_index_gaps or _is_index_instrument(instrument_id):
+        return _align_index_candles(raw, start, end)
+    return raw
 
 
 def get_index_candles(

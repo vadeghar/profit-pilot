@@ -17,6 +17,7 @@ from typing import Iterator
 
 from backtest.engine import BacktestSummary, TradeResult
 from db import repository as repo
+from strategies.nifty_atm_entry_debug_logger import run_entry_debug_log
 from strategies.nifty_atm_straddle import (
     Mode,
     NiftyATMStraddleStrategy,
@@ -68,6 +69,7 @@ def iter_trades(strategy: NiftyATMStraddleStrategy, start: date, end: date) -> I
     for trading_date in trading_days:
         if trading_date < strategy.strategy_start_date:
             continue  # Section 3: not applicable before the strategy start date
+
         if trading_date == debug_date:
             logger.info(
                 "[NIFTY ATM V2 DEBUG] Running entry diagnostics for %s | "
@@ -76,6 +78,15 @@ def iter_trades(strategy: NiftyATMStraddleStrategy, start: date, end: date) -> I
                 start,
                 end,
             )
+            try:
+                run_entry_debug_log(trading_date)
+            except Exception:
+                # Diagnostics must never change or break the actual backtest.
+                logger.exception(
+                    "[NIFTY ATM V2 DEBUG] Entry diagnostic failed for %s; continuing backtest",
+                    trading_date,
+                )
+
         record = run_strategy_for_day(trading_date, mode=Mode.BACKTEST)
         if record.status not in _TERMINAL_STATUSES:
             continue  # NO_ENTRY / NOT_APPLICABLE -- no trade fired that day

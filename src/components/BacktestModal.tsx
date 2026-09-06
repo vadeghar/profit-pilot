@@ -36,6 +36,7 @@ type NiftyFilters = {
   indiaVixBelow: string;
   combinedPremium: string;
   only100s: boolean;
+  forceAt1501: boolean;
 };
 
 const money = (v: number) =>
@@ -120,6 +121,7 @@ export function BacktestModal({
     indiaVixBelow: '15',
     combinedPremium: '50',
     only100s: true,
+    forceAt1501: false,
   });
   const [validationError, setValidationError] = useState<string | null>(null);
 
@@ -139,6 +141,7 @@ export function BacktestModal({
       indiaVixBelow: runRange.filters.indiaVixBelow,
       combinedPremium: runRange.filters.combinedPremium,
       only100s: String(runRange.filters.only100s),
+      forceAt1501: String(runRange.filters.forceAt1501),
     });
     const url = `${API_BASE}/strategies/${strategyId}/backtest/stream?${params.toString()}`;
     const es = new EventSource(url);
@@ -272,6 +275,10 @@ export function BacktestModal({
                 <label className="flex items-center gap-2 self-end text-xs text-[#C9D1D9]">
                   <input type="checkbox" checked={filters.only100s} onChange={(e) => setFilters((current) => ({ ...current, only100s: e.target.checked }))} className="h-4 w-4 accent-[#2EA043]" />
                   Only 100's strikes
+                </label>
+                <label className="flex items-center gap-2 text-xs text-[#C9D1D9] sm:col-span-2">
+                  <input type="checkbox" checked={filters.forceAt1501} onChange={(e) => setFilters((current) => ({ ...current, forceAt1501: e.target.checked }))} className="h-4 w-4 accent-[#D29922]" />
+                  3PM is my price — force entry at 15:01 if no earlier trade exists
                 </label>
               </div>
             )}

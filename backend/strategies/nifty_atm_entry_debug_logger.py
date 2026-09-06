@@ -52,7 +52,7 @@ def run_entry_debug_log(trading_date: date, log_path: Path, filters: NiftyATMEnt
     lines: list[str] = [
         "=" * 200,
         f"NIFTY ATM STRADDLE V5 ENTRY DEBUG | EXPIRY DATE={trading_date}",
-        f"Window={MARKET_OPEN} -> {FORCE_EXIT} IST | Entry after {filters.entry_time.strftime('%H:%M')} | VIX < {filters.india_vix_below} | Combined CE+PE <= {filters.combined_premium} | Only 100s={filters.only_100s}",
+        f"Window={MARKET_OPEN} -> {FORCE_EXIT} IST | Entry after {filters.entry_time.strftime('%H:%M')} | VIX < {filters.india_vix_below} | Combined CE+PE <= {filters.combined_premium} | Only 100s={filters.only_100s} | 3PM force={filters.force_at_1501}",
         "SCOPE=NIFTY WEEKLY OR MONTHLY EXPIRY DAYS ONLY",
         "Index data policy=EXACT -> PREVIOUS AVAILABLE CANDLE (NO LOOK-AHEAD)",
         "Live deployment note: live deployment will use broker API market data; historical gap fallback should normally never be exercised.",
@@ -83,8 +83,12 @@ def run_entry_debug_log(trading_date: date, log_path: Path, filters: NiftyATMEnt
     lines.append("-" * 200)
 
     for ts in common_ts:
-        if ts.astimezone(MARKET_TZ).time().replace(tzinfo=None) >= FORCE_EXIT:
+        market_time = ts.astimezone(MARKET_TZ).time().replace(tzinfo=None)
+        if market_time >= FORCE_EXIT:
             lines.append(f"{_market_ts(ts)} | RESULT=SCAN_STOP | reason=FORCE_EXIT_TIME")
+            break
+        if filters.force_at_1501 and market_time > FORCED_INITIAL_ENTRY:
+            lines.append(f"{_market_ts(ts)} | RESULT=SCAN_STOP | reason=FORCED_ENTRY_WINDOW_CLOSED")
             break
         vix = float(vix_df.loc[ts, "close"])
         spot = float(spot_df.loc[ts, "close"])
@@ -99,7 +103,6 @@ def run_entry_debug_log(trading_date: date, log_path: Path, filters: NiftyATMEnt
             fallback_flags.append("NIFTY_PREVIOUS")
         fallback_text = ",".join(fallback_flags) if fallback_flags else "EXACT"
 
-        market_time = ts.astimezone(MARKET_TZ).time().replace(tzinfo=None)
         if market_time < filters.entry_time or vix >= filters.india_vix_below:
             lines.append(f"{_market_ts(ts)} | {vix:.4f} | {vix_source_text} | {spot:.2f} | {nifty_source_text} | RESULT=SKIP_VIX | DATA={fallback_text}")
             continue
@@ -118,14 +121,15 @@ def run_entry_debug_log(trading_date: date, log_path: Path, filters: NiftyATMEnt
             lines.append(f"{_market_ts(ts)} | {vix:.4f} | {vix_source_text} | {spot:.2f} | {nifty_source_text} | ATM={strike} | CE={ce_p} | PE={pe_p} | RESULT=SKIP_MISSING_OPTION_PRICE | DATA={fallback_text}")
             continue
         combined = ce_p + pe_p
-        entry_allowed = combined <= filters.combined_premium
-        result = "INITIAL_ENTRY" if entry_allowed else "SKIP_PREMIUM"
+        forced_entry = filters.force_at_1501 and market_time == FORCED_INITIAL_ENTRY
+        entry_allowed = combined <= filters.combined_premium or forced_entry
+        result = "INITIAL_FORCED_1501" if forced_entry else ("INITIAL_ENTRY" if entry_allowed else "SKIP_PREMIUM")
         lines.append(
             f"{_market_ts(ts)} | {vix:.4f} | {vix_source_text} | {spot:.2f} | {nifty_source_text} | ATM={strike} | "
             f"CE={ce_p:.2f} | PE={pe_p:.2f} | CE+PE={combined:.2f} | RESULT={result} | DATA={fallback_text}"
         )
         if entry_allowed:
-            entry_reason = "INITIAL"
+            entry_reason = "INITIAL_FORCED_1501" if forced_entry else "INITIAL"
             lines.append(f"ENTRY_WOULD_BE_TAKEN={_market_ts(ts)} | REASON={entry_reason} | ATM={strike} | CE={ce_p:.2f} | PE={pe_p:.2f} | SUM={combined:.2f} | VIX={vix:.4f} | VIX_SOURCE={vix_source_text} | NIFTY_SOURCE={nifty_source_text}")
             logger.info(
                 "[NIFTY ATM V5 DEBUG] ENTRY_WOULD_BE_TAKEN=%s | REASON=%s | ATM=%s | CE=%.2f | PE=%.2f | SUM=%.2f | VIX=%.4f | DATA=%s",

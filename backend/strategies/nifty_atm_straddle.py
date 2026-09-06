@@ -89,6 +89,7 @@ class NiftyATMEntryFilters:
     india_vix_below: float = VIX_MAX
     combined_premium: float = INITIAL_ENTRY_MAX_PREMIUM
     only_100s: bool = True
+    force_at_1501: bool = False
 
 
 class Mode(str, Enum):
@@ -274,6 +275,8 @@ def run_strategy_for_day(trading_date: date, mode: Mode = Mode.BACKTEST, filters
         market_time = _market_time(ts)
         if market_time >= FORCE_EXIT_TIME:
             break
+        if filters.force_at_1501 and market_time > FORCED_INITIAL_ENTRY_TIME:
+            break
 
         vix_val = float(vix_df.loc[ts, "close"])
         if market_time < filters.entry_time or vix_val >= filters.india_vix_below:
@@ -293,7 +296,8 @@ def run_strategy_for_day(trading_date: date, mode: Mode = Mode.BACKTEST, filters
             continue
 
         combined = ce_p + pe_p
-        if combined <= filters.combined_premium:
+        forced_entry = filters.force_at_1501 and market_time == FORCED_INITIAL_ENTRY_TIME
+        if combined <= filters.combined_premium or forced_entry:
             entry_ts = ts
             locked_atm_strike, ce_instr, pe_instr = strike, ce_candidate, pe_candidate
             lot_size = int(ce_instr["lot_size"])
@@ -319,8 +323,9 @@ def run_strategy_for_day(trading_date: date, mode: Mode = Mode.BACKTEST, filters
     record.vix_at_entry = vix_at_entry
     record.ce_lots_bought = INITIAL_LOTS
     record.pe_lots_bought = INITIAL_LOTS
-    _record_fill(record, entry_ts, "BUY", "CE", INITIAL_LOTS, ce_price_at_entry, "INITIAL")
-    _record_fill(record, entry_ts, "BUY", "PE", INITIAL_LOTS, pe_price_at_entry, "INITIAL")
+    entry_tag = "INITIAL_FORCED_1501" if filters.force_at_1501 and _market_time(entry_ts) == FORCED_INITIAL_ENTRY_TIME else "INITIAL"
+    _record_fill(record, entry_ts, "BUY", "CE", INITIAL_LOTS, ce_price_at_entry, entry_tag)
+    _record_fill(record, entry_ts, "BUY", "PE", INITIAL_LOTS, pe_price_at_entry, entry_tag)
 
     ce_df = repo.get_candles(ce_instr["id"], entry_ts, entry_window_end).set_index("ts")
     pe_df = repo.get_candles(pe_instr["id"], entry_ts, entry_window_end).set_index("ts")

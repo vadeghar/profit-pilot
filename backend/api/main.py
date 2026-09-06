@@ -118,7 +118,7 @@ def _trade_payload(t) -> dict:
     }
 
 
-def _nifty_filters(entry_time: str, india_vix_below: float, combined_premium: float, only_100s: bool) -> NiftyATMEntryFilters:
+def _nifty_filters(entry_time: str, india_vix_below: float, combined_premium: float, only_100s: bool, force_at_1501: bool) -> NiftyATMEntryFilters:
     try:
         parsed_time = time.fromisoformat(entry_time)
     except ValueError as error:
@@ -127,7 +127,7 @@ def _nifty_filters(entry_time: str, india_vix_below: float, combined_premium: fl
         raise HTTPException(422, "entryTime must be between 09:16 and 15:01")
     if india_vix_below <= 0 or combined_premium < 0:
         raise HTTPException(422, "VIX threshold must be positive and premium cannot be negative")
-    return NiftyATMEntryFilters(parsed_time, india_vix_below, combined_premium, only_100s)
+    return NiftyATMEntryFilters(parsed_time, india_vix_below, combined_premium, only_100s, force_at_1501)
 
 
 @app.get("/api/strategies")
@@ -237,12 +237,13 @@ def backtest_strategy(
     indiaVixBelow: float = Query(15.0),
     combinedPremium: float = Query(50.0),
     only100s: bool = Query(True),
+    forceAt1501: bool = Query(False),
 ):
     strat = STRATEGIES.get(strategy_id)
     if strat is None:
         raise HTTPException(404, f"Unknown strategy '{strategy_id}'")
 
-    filters = _nifty_filters(entryTime, indiaVixBelow, combinedPremium, only100s) if isinstance(strat, NiftyATMStraddleStrategy) else None
+    filters = _nifty_filters(entryTime, indiaVixBelow, combinedPremium, only100s, forceAt1501) if isinstance(strat, NiftyATMStraddleStrategy) else None
     summary = _run_backtest_for(strat, start, end, filters=filters)
     _last_summary[strategy_id] = {"summary": summary, "run_at": datetime.utcnow()}
 
@@ -266,12 +267,13 @@ def backtest_strategy_stream(
     indiaVixBelow: float = Query(15.0),
     combinedPremium: float = Query(50.0),
     only100s: bool = Query(True),
+    forceAt1501: bool = Query(False),
 ):
     strat = STRATEGIES.get(strategy_id)
     if strat is None:
         raise HTTPException(404, f"Unknown strategy '{strategy_id}'")
 
-    filters = _nifty_filters(entryTime, indiaVixBelow, combinedPremium, only100s) if isinstance(strat, NiftyATMStraddleStrategy) else None
+    filters = _nifty_filters(entryTime, indiaVixBelow, combinedPremium, only100s, forceAt1501) if isinstance(strat, NiftyATMStraddleStrategy) else None
 
     def event_stream():
         trades = []

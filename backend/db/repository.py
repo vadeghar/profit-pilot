@@ -68,6 +68,45 @@ def get_instrument(
     return dict(row) if row else None
 
 
+def get_weekly_expiries(
+    underlying_symbol: str,
+    instrument_type: str = "CE",
+    on_or_after: Optional[date] = None,
+    limit: int = 20,
+) -> list[date]:
+    """Return distinct option expiries on/after a trading date.
+
+    The strategy needs the nearest listed NIFTY option expiry. The instrument
+    master is the source of truth, so we derive the expiry calendar directly
+    from active option contracts rather than maintaining a second calendar.
+    The nearest expiry is returned first.
+    """
+    query = text(
+        """
+        SELECT DISTINCT expiry
+        FROM instruments
+        WHERE underlying_symbol = :underlying
+          AND instrument_type = :itype
+          AND is_active = true
+          AND expiry IS NOT NULL
+          AND (:on_or_after IS NULL OR expiry >= :on_or_after)
+        ORDER BY expiry ASC
+        LIMIT :limit
+        """
+    )
+    with engine.connect() as conn:
+        rows = conn.execute(
+            query,
+            {
+                "underlying": underlying_symbol,
+                "itype": instrument_type,
+                "on_or_after": on_or_after,
+                "limit": limit,
+            },
+        ).fetchall()
+    return [r[0] for r in rows]
+
+
 def get_index_instrument_id(
     underlying_symbol: str,
     trading_date: Optional[date] = None,

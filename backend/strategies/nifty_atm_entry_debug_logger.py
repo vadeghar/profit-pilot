@@ -29,8 +29,8 @@ def _market_ts(ts: datetime) -> str:
 
 
 def run_entry_debug_log(trading_date: date, log_path: Path) -> None:
-    """Append the entry scan only for an NIFTY weekly expiry date."""
-    expiries = repo.get_weekly_expiries(UNDERLYING, "CE", on_or_after=trading_date, limit=1)
+    """Append the entry scan only for an NIFTY weekly or monthly expiry date."""
+    expiries = repo.get_nifty_expiry_dates(UNDERLYING, on_or_after=trading_date, limit=1)
     if not expiries or expiries[0] != trading_date:
         # Strict strategy scope: non-expiry dates are ignored completely.
         return
@@ -44,7 +44,7 @@ def run_entry_debug_log(trading_date: date, log_path: Path) -> None:
         "=" * 200,
         f"NIFTY ATM STRADDLE V2 ENTRY DEBUG | EXPIRY DATE={trading_date}",
         f"Window={MARKET_OPEN} -> {FORCE_EXIT} IST | VIX < {VIX_MAX} | Combined CE+PE <= {INITIAL_MAX_PREMIUM}",
-        "SCOPE=NIFTY WEEKLY EXPIRY DAYS ONLY",
+        "SCOPE=NIFTY WEEKLY OR MONTHLY EXPIRY DAYS ONLY",
         "Index data policy=EXACT -> PREVIOUS AVAILABLE CANDLE (NO LOOK-AHEAD)",
         "Live deployment note: live deployment will use broker API market data; historical gap fallback should normally never be exercised.",
         "=" * 200,

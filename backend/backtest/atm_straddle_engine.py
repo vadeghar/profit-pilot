@@ -17,7 +17,6 @@ from typing import Iterator
 
 from backtest.engine import BacktestSummary, TradeResult
 from db import repository as repo
-from strategies.nifty_atm_entry_debug_logger import run_entry_debug_log
 from strategies.nifty_atm_straddle import (
     Mode,
     NiftyATMStraddleStrategy,
@@ -65,12 +64,18 @@ def iter_trades(strategy: NiftyATMStraddleStrategy, start: date, end: date) -> I
     """Duck-type compatible with backtest.engine.iter_trades's call shape,
     so api/main.py can dispatch to either engine the same way."""
     trading_days = repo.get_trading_days(UNDERLYING, start, end)
+    debug_date = date(2026, 8, 4)
     for trading_date in trading_days:
         if trading_date < strategy.strategy_start_date:
             continue  # Section 3: not applicable before the strategy start date
-        # Generate the dedicated diagnostic file automatically for 2026-08-04.
-        # This is intentionally date-scoped and does not affect strategy results.
-        run_entry_debug_log(trading_date)
+        if trading_date == debug_date:
+            logger.info(
+                "[NIFTY ATM V2 DEBUG] Running entry diagnostics for %s | "
+                "range=%s..%s | branch-specific diagnostic enabled",
+                trading_date,
+                start,
+                end,
+            )
         record = run_strategy_for_day(trading_date, mode=Mode.BACKTEST)
         if record.status not in _TERMINAL_STATUSES:
             continue  # NO_ENTRY / NOT_APPLICABLE -- no trade fired that day

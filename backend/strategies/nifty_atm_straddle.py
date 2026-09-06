@@ -3,12 +3,16 @@ Strategy: NIFTY ATM CE + PE Long Straddle Strategy
 (strategy_id NK_CAS_NIFTY_ATM_STRADDLE_2PM_V1). See
 NIFTY_ATM_STRADDLE.md for the full spec this implements.
 
-V2 entry change:
-  - Initial entry is no longer restricted to 2:00 PM or later.
-  - From market open, the strategy continuously checks only India VIX < 15
-    and combined CE + PE premium <= 50.
-  - The first observation satisfying both conditions triggers entry.
-  - The 15:35 force-exit remains unchanged.
+V3 entry change ("3pm is my price"):
+  - Before 3:01 PM, the normal entry rule remains India VIX < 15 and
+    combined CE + PE premium <= 50.
+  - If no initial entry has occurred by 3:01 PM, the 3:01 PM NIFTY spot
+    becomes the entry spot/ATM reference and the first trade is initiated,
+    even when the combined CE + PE premium is above 50.
+  - The India VIX < 15 condition remains mandatory for the forced 3:01 PM
+    entry.
+  - Once entered, all averaging, target, cost-exit, hard-stop and 15:35
+    force-exit rules remain unchanged.
 
 Scope:
   - This strategy is STRICTLY for NIFTY expiry trading days.
@@ -21,7 +25,8 @@ Scope:
 Why this doesn't subclass strategies.base.OptionsStrategy:
 The generic engine assumes one fixed entry timestamp per trade, a static set
 of legs built once at entry, and a single full exit. This strategy instead:
-  - polls continuously from market open for its entry condition;
+  - polls continuously from market open for its entry;
+  - has a 3:01 PM forced initial-entry fallback;
   - adds legs twice more intraday (2A, 2B averaging);
   - exits partially at each target level, then protects the remainder with
     a cost-based stop;
@@ -45,6 +50,7 @@ UNDERLYING = "NIFTY 50"
 VIX_UNDERLYING = "INDIA VIX"
 
 MARKET_OPEN_TIME = time(9, 15)
+FORCED_INITIAL_ENTRY_TIME = time(15, 1)
 FORCE_EXIT_TIME = time(15, 35)
 MARKET_TZ = ZoneInfo("Asia/Kolkata")
 
@@ -143,7 +149,7 @@ class StraddleTradeRecord:
 class NiftyATMStraddleStrategy:
     name = "NIFTY ATM Straddle"
     underlying = UNDERLYING
-    frequency = "NIFTY weekly/monthly expiry days · entry when VIX < 15 and premium <= 50"
+    frequency = "NIFTY weekly/monthly expiry days · VIX < 15 · premium <= 50, or 3:01 PM forced entry"
     strategy_id = STRATEGY_ID
     strategy_start_date = STRATEGY_START_DATE
 
@@ -190,7 +196,7 @@ def _compute_pnl(record: StraddleTradeRecord) -> float:
 
 
 def run_strategy_for_day(trading_date: date, mode: Mode = Mode.BACKTEST) -> StraddleTradeRecord:
-    """Run the V2 state machine only on a NIFTY weekly or monthly expiry day."""
+    """Run the V3 state machine only on a NIFTY weekly or monthly expiry day."""
     record = StraddleTradeRecord(trading_date=trading_date, mode=mode.value)
 
     if trading_date < STRATEGY_START_DATE:
@@ -240,13 +246,17 @@ def run_strategy_for_day(trading_date: date, mode: Mode = Mode.BACKTEST) -> Stra
     locked_atm_strike = ce_instr = pe_instr = lot_size = None
     ce_price_at_entry = pe_price_at_entry = combined_at_entry = None
     vix_at_entry = spot_at_entry = None
+    forced_entry = False
 
     for ts in sorted(set(spot_df.index) & set(vix_df.index)):
-        if _market_time(ts) >= FORCE_EXIT_TIME:
+        market_time = _market_time(ts)
+        if market_time >= FORCE_EXIT_TIME:
             break
+
         vix_val = float(vix_df.loc[ts, "close"])
         if vix_val >= VIX_MAX:
             continue
+
         spot = float(spot_df.loc[ts, "close"])
         strike = repo.get_nearest_strike(UNDERLYING, "CE", expiry, spot)
         if strike is None:
@@ -259,15 +269,20 @@ def run_strategy_for_day(trading_date: date, mode: Mode = Mode.BACKTEST) -> Stra
         pe_p = repo.get_price_at_or_before(pe_candidate["id"], ts)
         if ce_p is None or pe_p is None:
             continue
+
         combined = ce_p + pe_p
-        if combined > INITIAL_ENTRY_MAX_PREMIUM:
-            continue
-        entry_ts = ts
-        locked_atm_strike, ce_instr, pe_instr = strike, ce_candidate, pe_candidate
-        lot_size = int(ce_instr["lot_size"])
-        ce_price_at_entry, pe_price_at_entry, combined_at_entry = ce_p, pe_p, combined
-        vix_at_entry, spot_at_entry = vix_val, spot
-        break
+        normal_entry = market_time >= MARKET_OPEN_TIME and combined <= INITIAL_ENTRY_MAX_PREMIUM
+        forced_entry = market_time >= FORCED_INITIAL_ENTRY_TIME
+
+        # V3: "3pm is my price". If no normal entry happened before 3:01 PM,
+        # use the 3:01 PM spot to lock ATM and enter regardless of premium.
+        if normal_entry or forced_entry:
+            entry_ts = ts
+            locked_atm_strike, ce_instr, pe_instr = strike, ce_candidate, pe_candidate
+            lot_size = int(ce_instr["lot_size"])
+            ce_price_at_entry, pe_price_at_entry, combined_at_entry = ce_p, pe_p, combined
+            vix_at_entry, spot_at_entry = vix_val, spot
+            break
 
     if entry_ts is None:
         record.status = StrategyState.NO_ENTRY.value
@@ -287,8 +302,8 @@ def run_strategy_for_day(trading_date: date, mode: Mode = Mode.BACKTEST) -> Stra
     record.vix_at_entry = vix_at_entry
     record.ce_lots_bought = INITIAL_LOTS
     record.pe_lots_bought = INITIAL_LOTS
-    _record_fill(record, entry_ts, "BUY", "CE", INITIAL_LOTS, ce_price_at_entry, "INITIAL")
-    _record_fill(record, entry_ts, "BUY", "PE", INITIAL_LOTS, pe_price_at_entry, "INITIAL")
+    _record_fill(record, entry_ts, "BUY", "CE", INITIAL_LOTS, ce_price_at_entry, "INITIAL_FORCED_1501" if forced_entry else "INITIAL")
+    _record_fill(record, entry_ts, "BUY", "PE", INITIAL_LOTS, pe_price_at_entry, "INITIAL_FORCED_1501" if forced_entry else "INITIAL")
 
     ce_df = repo.get_candles(ce_instr["id"], entry_ts, entry_window_end).set_index("ts")
     pe_df = repo.get_candles(pe_instr["id"], entry_ts, entry_window_end).set_index("ts")

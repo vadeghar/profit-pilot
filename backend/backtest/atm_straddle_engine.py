@@ -1,7 +1,8 @@
 """
 Backtest runner for the NIFTY ATM Straddle strategy.
 
-The strategy is strictly an NIFTY weekly-expiry-day strategy. Non-expiry
+The strategy is strictly an NIFTY expiry-day strategy. Expiry dates are
+resolved from nifty_expiry_calendar and may be WEEKLY or MONTHLY. Non-expiry
 trading dates are ignored before diagnostics or strategy calculations are run.
 """
 import logging
@@ -54,8 +55,8 @@ def _to_trade_result(record: StraddleTradeRecord) -> TradeResult:
 
 
 def _is_expiry_day(trading_date: date) -> bool:
-    """Return True only when trading_date itself is the next weekly expiry."""
-    expiries = repo.get_weekly_expiries(UNDERLYING, "CE", on_or_after=trading_date, limit=1)
+    """Return True only when trading_date is an actual NIFTY expiry date."""
+    expiries = repo.get_nifty_expiry_dates(UNDERLYING, on_or_after=trading_date, limit=1)
     return bool(expiries and expiries[0] == trading_date)
 
 
@@ -77,7 +78,7 @@ def iter_trades(strategy: NiftyATMStraddleStrategy, start: date, end: date) -> I
             "NIFTY ATM STRADDLE V2 BACKTEST ENTRY DIAGNOSTIC\n"
             f"RUN_STARTED_IST={datetime.now(MARKET_TZ).strftime('%Y-%m-%d %H:%M:%S IST')}\n"
             f"REQUESTED_RANGE={start}..{end}\n"
-            "SCOPE=NIFTY WEEKLY EXPIRY DAYS ONLY\n"
+            "SCOPE=NIFTY WEEKLY OR MONTHLY EXPIRY DAYS ONLY\n"
             "Non-expiry trading dates are intentionally ignored and are not logged.\n\n"
         )
 

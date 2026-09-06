@@ -15,6 +15,7 @@ from db import repository as repo
 from strategies.nifty_atm_entry_debug_logger import create_run_log_path, run_entry_debug_log
 from strategies.nifty_atm_straddle import (
     Mode,
+    NiftyATMEntryFilters,
     NiftyATMStraddleStrategy,
     StraddleTradeRecord,
     StrategyState,
@@ -60,13 +61,13 @@ def _is_expiry_day(trading_date: date) -> bool:
     return bool(expiries and expiries[0] == trading_date)
 
 
-def iter_trades(strategy: NiftyATMStraddleStrategy, start: date, end: date) -> Iterator[TradeResult]:
+def iter_trades(strategy: NiftyATMStraddleStrategy, start: date, end: date, filters: NiftyATMEntryFilters | None = None) -> Iterator[TradeResult]:
     """Run diagnostics and the strategy state machine only on NIFTY expiry days."""
     trading_days = repo.get_trading_days(UNDERLYING, start, end)
     debug_log_path = create_run_log_path()
 
     logger.info(
-        "[NIFTY ATM V4 DEBUG] Backtest diagnostic logging enabled | "
+        "[NIFTY ATM V5 DEBUG] Backtest diagnostic logging enabled | "
         "expiry-days-only | range=%s..%s | output=%s",
         start,
         end,
@@ -75,7 +76,7 @@ def iter_trades(strategy: NiftyATMStraddleStrategy, start: date, end: date) -> I
 
     with debug_log_path.open("w", encoding="utf-8") as handle:
         handle.write(
-            "NIFTY ATM STRADDLE V4 BACKTEST ENTRY DIAGNOSTIC\n"
+            "NIFTY ATM STRADDLE V5 BACKTEST ENTRY DIAGNOSTIC\n"
             f"RUN_STARTED_IST={datetime.now(MARKET_TZ).strftime('%Y-%m-%d %H:%M:%S IST')}\n"
             f"REQUESTED_RANGE={start}..{end}\n"
             "SCOPE=NIFTY WEEKLY OR MONTHLY EXPIRY DAYS ONLY\n"
@@ -92,10 +93,10 @@ def iter_trades(strategy: NiftyATMStraddleStrategy, start: date, end: date) -> I
             continue
 
         try:
-            run_entry_debug_log(trading_date, debug_log_path)
+            run_entry_debug_log(trading_date, debug_log_path, filters=filters)
         except Exception:
             logger.exception(
-                "[NIFTY ATM V4 DEBUG] Entry diagnostic failed for expiry date %s; continuing backtest",
+                "[NIFTY ATM V5 DEBUG] Entry diagnostic failed for expiry date %s; continuing backtest",
                 trading_date,
             )
             with debug_log_path.open("a", encoding="utf-8") as handle:
@@ -103,12 +104,12 @@ def iter_trades(strategy: NiftyATMStraddleStrategy, start: date, end: date) -> I
                     f"DATE={trading_date} | RESULT=DIAGNOSTIC_FAILED | see backend logger for traceback\n"
                 )
 
-        record = run_strategy_for_day(trading_date, mode=Mode.BACKTEST)
+        record = run_strategy_for_day(trading_date, mode=Mode.BACKTEST, filters=filters)
         if record.status not in _TERMINAL_STATUSES:
             continue
         yield _to_trade_result(record)
 
 
-def run_backtest(strategy: NiftyATMStraddleStrategy, start: date, end: date) -> BacktestSummary:
-    trades = list(iter_trades(strategy, start, end))
+def run_backtest(strategy: NiftyATMStraddleStrategy, start: date, end: date, filters: NiftyATMEntryFilters | None = None) -> BacktestSummary:
+    trades = list(iter_trades(strategy, start, end, filters=filters))
     return BacktestSummary(strategy_name=strategy.name, trades=trades)

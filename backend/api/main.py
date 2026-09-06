@@ -28,7 +28,7 @@ import asyncio
 import os
 import queue
 import threading
-from datetime import date, datetime
+from datetime import date, datetime, time
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -40,7 +40,7 @@ from backtest import atm_straddle_engine
 from backtest.engine import BacktestSummary, iter_trades, run_backtest
 from strategies.blaze_butterfly import BlazeButterflyStrategy
 from strategies.titan_condor import TitanCondorStrategy
-from strategies.nifty_atm_straddle import NiftyATMStraddleStrategy
+from strategies.nifty_atm_straddle import NiftyATMEntryFilters, NiftyATMStraddleStrategy
 from news.models import NewsResponse
 from news.service import get_news
 from analytics.models import AnalyticsSnapshot
@@ -81,15 +81,15 @@ STRATEGIES = {
 _last_summary: dict[str, dict] = {}
 
 
-def _iter_trades_for(strat, start: date, end: date):
+def _iter_trades_for(strat, start: date, end: date, filters: NiftyATMEntryFilters | None = None):
     if isinstance(strat, NiftyATMStraddleStrategy):
-        return atm_straddle_engine.iter_trades(strat, start, end)
+        return atm_straddle_engine.iter_trades(strat, start, end, filters=filters)
     return iter_trades(strat, start, end)
 
 
-def _run_backtest_for(strat, start: date, end: date) -> BacktestSummary:
+def _run_backtest_for(strat, start: date, end: date, filters: NiftyATMEntryFilters | None = None) -> BacktestSummary:
     if isinstance(strat, NiftyATMStraddleStrategy):
-        return atm_straddle_engine.run_backtest(strat, start, end)
+        return atm_straddle_engine.run_backtest(strat, start, end, filters=filters)
     return run_backtest(strat, start, end)
 
 
@@ -116,6 +116,18 @@ def _trade_payload(t) -> dict:
         "pnl_pct": t.pnl_pct,
         "details": t.details,
     }
+
+
+def _nifty_filters(entry_time: str, india_vix_below: float, combined_premium: float, only_100s: bool) -> NiftyATMEntryFilters:
+    try:
+        parsed_time = time.fromisoformat(entry_time)
+    except ValueError as error:
+        raise HTTPException(422, "entryTime must use HH:MM format") from error
+    if not time(9, 16) <= parsed_time <= time(15, 1):
+        raise HTTPException(422, "entryTime must be between 09:16 and 15:01")
+    if india_vix_below <= 0 or combined_premium < 0:
+        raise HTTPException(422, "VIX threshold must be positive and premium cannot be negative")
+    return NiftyATMEntryFilters(parsed_time, india_vix_below, combined_premium, only_100s)
 
 
 @app.get("/api/strategies")
@@ -221,12 +233,17 @@ def backtest_strategy(
     strategy_id: str,
     start: date = Query(..., description="YYYY-MM-DD"),
     end: date = Query(..., description="YYYY-MM-DD"),
+    entryTime: str = Query("15:01", pattern=r"^\d{2}:\d{2}$"),
+    indiaVixBelow: float = Query(15.0),
+    combinedPremium: float = Query(50.0),
+    only100s: bool = Query(True),
 ):
     strat = STRATEGIES.get(strategy_id)
     if strat is None:
         raise HTTPException(404, f"Unknown strategy '{strategy_id}'")
 
-    summary = _run_backtest_for(strat, start, end)
+    filters = _nifty_filters(entryTime, indiaVixBelow, combinedPremium, only100s) if isinstance(strat, NiftyATMStraddleStrategy) else None
+    summary = _run_backtest_for(strat, start, end, filters=filters)
     _last_summary[strategy_id] = {"summary": summary, "run_at": datetime.utcnow()}
 
     return {
@@ -245,15 +262,21 @@ def backtest_strategy_stream(
     strategy_id: str,
     start: date = Query(..., description="YYYY-MM-DD"),
     end: date = Query(..., description="YYYY-MM-DD"),
+    entryTime: str = Query("15:01", pattern=r"^\d{2}:\d{2}$"),
+    indiaVixBelow: float = Query(15.0),
+    combinedPremium: float = Query(50.0),
+    only100s: bool = Query(True),
 ):
     strat = STRATEGIES.get(strategy_id)
     if strat is None:
         raise HTTPException(404, f"Unknown strategy '{strategy_id}'")
 
+    filters = _nifty_filters(entryTime, indiaVixBelow, combinedPremium, only100s) if isinstance(strat, NiftyATMStraddleStrategy) else None
+
     def event_stream():
         trades = []
         try:
-            for t in _iter_trades_for(strat, start, end):
+            for t in _iter_trades_for(strat, start, end, filters=filters):
                 trades.append(t)
                 wins = sum(1 for x in trades if x.pnl > 0)
                 payload = {

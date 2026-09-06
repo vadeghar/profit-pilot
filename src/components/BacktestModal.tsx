@@ -31,6 +31,13 @@ type BacktestErrorEvent = {
 
 type Phase = 'setup' | 'running' | 'done';
 
+type NiftyFilters = {
+  entryTime: string;
+  indiaVixBelow: string;
+  combinedPremium: string;
+  only100s: boolean;
+};
+
 const money = (v: number) =>
   `${v >= 0 ? '+' : ''}₹ ${v.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
@@ -46,6 +53,11 @@ const dateTime = (iso: string) =>
 
 const todayStr = () => new Date().toISOString().slice(0, 10);
 const daysAgoStr = (n: number) => new Date(Date.now() - n * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+const entryTimes = Array.from({ length: 106 }, (_, index) => {
+  const totalMinutes = 9 * 60 + 16 + index;
+  return `${String(Math.floor(totalMinutes / 60)).padStart(2, '0')}:${String(totalMinutes % 60).padStart(2, '0')}`;
+}).filter((value) => value <= '15:01');
 
 function exportTrades(strategyName: string, range: { start: string; end: string }, trades: TradeEvent[], totalPnl: number) {
   const rows: unknown[][] = [
@@ -103,10 +115,16 @@ export function BacktestModal({
   // Filters -- defaults to last 6 months, but nothing runs until the user hits Play.
   const [fromDate, setFromDate] = useState(daysAgoStr(180));
   const [toDate, setToDate] = useState(todayStr());
+  const [filters, setFilters] = useState<NiftyFilters>({
+    entryTime: '15:01',
+    indiaVixBelow: '15',
+    combinedPremium: '50',
+    only100s: true,
+  });
   const [validationError, setValidationError] = useState<string | null>(null);
 
   // Streaming state -- only populated once the user starts a run.
-  const [runRange, setRunRange] = useState<{ start: string; end: string } | null>(null);
+  const [runRange, setRunRange] = useState<{ start: string; end: string; filters: NiftyFilters } | null>(null);
   const [trades, setTrades] = useState<TradeEvent[]>([]);
   const [done, setDone] = useState<DoneEvent | null>(null);
   const [streamError, setStreamError] = useState<string | null>(null);
@@ -114,7 +132,15 @@ export function BacktestModal({
   useEffect(() => {
     if (!runRange) return; // setup phase -- nothing to stream yet
 
-    const url = `${API_BASE}/strategies/${strategyId}/backtest/stream?start=${runRange.start}&end=${runRange.end}`;
+    const params = new URLSearchParams({
+      start: runRange.start,
+      end: runRange.end,
+      entryTime: runRange.filters.entryTime,
+      indiaVixBelow: runRange.filters.indiaVixBelow,
+      combinedPremium: runRange.filters.combinedPremium,
+      only100s: String(runRange.filters.only100s),
+    });
+    const url = `${API_BASE}/strategies/${strategyId}/backtest/stream?${params.toString()}`;
     const es = new EventSource(url);
 
     es.addEventListener('trade', (e) => {
@@ -162,7 +188,13 @@ export function BacktestModal({
     setTrades([]);
     setDone(null);
     setPhase('running');
-    setRunRange({ start: fromDate, end: toDate });
+    const vix = Number(filters.indiaVixBelow);
+    const premium = Number(filters.combinedPremium);
+    if (!Number.isFinite(vix) || vix <= 0 || !Number.isFinite(premium) || premium < 0) {
+      setValidationError('VIX must be positive and combined premium cannot be negative.');
+      return;
+    }
+    setRunRange({ start: fromDate, end: toDate, filters: { ...filters } });
   };
 
   const handleRunAnother = () => {
@@ -221,7 +253,30 @@ export function BacktestModal({
               </div>
             </div>
 
-            <div className="mt-3 text-[10px] text-[#8B949E]">More filters (margin per lot, target/stop %) are coming soon.</div>
+            {strategyId === 'nifty-atm-straddle' && (
+              <div className="mt-4 grid gap-4 border-t border-[#21262D] pt-4 sm:grid-cols-2">
+                <div>
+                  <label className="mb-1 block text-[10px] uppercase tracking-wider text-[#8B949E]">Entry Time After</label>
+                  <select value={filters.entryTime} onChange={(e) => setFilters((current) => ({ ...current, entryTime: e.target.value }))} className="h-9 w-full border border-[#30363D] bg-[#161B22] px-3 text-xs outline-none focus:border-[#2EA043]">
+                    {entryTimes.map((entryTime) => <option key={entryTime} value={entryTime}>{entryTime}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="mb-1 block text-[10px] uppercase tracking-wider text-[#8B949E]">India VIX Below</label>
+                  <input type="number" min="0.01" step="0.01" value={filters.indiaVixBelow} onChange={(e) => setFilters((current) => ({ ...current, indiaVixBelow: e.target.value }))} className="h-9 w-full border border-[#30363D] bg-[#161B22] px-3 text-xs outline-none focus:border-[#2EA043]" />
+                </div>
+                <div>
+                  <label className="mb-1 block text-[10px] uppercase tracking-wider text-[#8B949E]">Combined Premium</label>
+                  <input type="number" min="0" step="0.01" value={filters.combinedPremium} onChange={(e) => setFilters((current) => ({ ...current, combinedPremium: e.target.value }))} className="h-9 w-full border border-[#30363D] bg-[#161B22] px-3 text-xs outline-none focus:border-[#2EA043]" />
+                </div>
+                <label className="flex items-center gap-2 self-end text-xs text-[#C9D1D9]">
+                  <input type="checkbox" checked={filters.only100s} onChange={(e) => setFilters((current) => ({ ...current, only100s: e.target.checked }))} className="h-4 w-4 accent-[#2EA043]" />
+                  Only 100's strikes
+                </label>
+              </div>
+            )}
+
+            <div className="mt-3 text-[10px] text-[#8B949E]">Entry filters apply only to the NIFTY ATM Straddle. All averaging, target, stop-loss, and exit rules remain unchanged.</div>
 
             {validationError && <div className="mt-3 text-xs text-[#F85149]">{validationError}</div>}
 

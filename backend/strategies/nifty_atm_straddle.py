@@ -72,10 +72,23 @@ HARD_STOP_PREMIUM = 8.0
 def preferred_atm_strike(spot: float) -> float:
     """Round NIFTY spot to the nearest 100-point strike, never a 50-point strike."""
     return float(math.floor(spot / 100.0 + 0.5) * 100)
+
+
+def nearest_available_strike(spot: float) -> float:
+    """Select the nearest 50-point strike when the 100s-only filter is off."""
+    return float(math.floor(spot / 50.0 + 0.5) * 50)
 INITIAL_LOTS = 2
 LEVEL_2A_ADD_LOTS = 2
 LEVEL_2B_ADD_LOTS = 2
 MAX_LOTS_PER_LEG = 6
+
+
+@dataclass(frozen=True)
+class NiftyATMEntryFilters:
+    entry_time: time = FORCED_INITIAL_ENTRY_TIME
+    india_vix_below: float = VIX_MAX
+    combined_premium: float = INITIAL_ENTRY_MAX_PREMIUM
+    only_100s: bool = True
 
 
 class Mode(str, Enum):
@@ -163,8 +176,8 @@ class NiftyATMStraddleStrategy:
     strategy_id = STRATEGY_ID
     strategy_start_date = STRATEGY_START_DATE
 
-    def run_for_day(self, trading_date: date, mode: Mode = Mode.BACKTEST) -> StraddleTradeRecord:
-        return run_strategy_for_day(trading_date, mode=mode)
+    def run_for_day(self, trading_date: date, mode: Mode = Mode.BACKTEST, filters: Optional[NiftyATMEntryFilters] = None) -> StraddleTradeRecord:
+        return run_strategy_for_day(trading_date, mode=mode, filters=filters)
 
 
 def _market_time(ts: datetime) -> time:
@@ -205,9 +218,10 @@ def _compute_pnl(record: StraddleTradeRecord) -> float:
     return round(total, 2)
 
 
-def run_strategy_for_day(trading_date: date, mode: Mode = Mode.BACKTEST) -> StraddleTradeRecord:
+def run_strategy_for_day(trading_date: date, mode: Mode = Mode.BACKTEST, filters: Optional[NiftyATMEntryFilters] = None) -> StraddleTradeRecord:
     """Run the V3 state machine only on a NIFTY weekly or monthly expiry day."""
     record = StraddleTradeRecord(trading_date=trading_date, mode=mode.value)
+    filters = filters or NiftyATMEntryFilters()
 
     if trading_date < STRATEGY_START_DATE:
         record.status = StrategyState.NOT_APPLICABLE.value
@@ -256,19 +270,17 @@ def run_strategy_for_day(trading_date: date, mode: Mode = Mode.BACKTEST) -> Stra
     locked_atm_strike = ce_instr = pe_instr = lot_size = None
     ce_price_at_entry = pe_price_at_entry = combined_at_entry = None
     vix_at_entry = spot_at_entry = None
-    forced_entry = False
-
     for ts in sorted(set(spot_df.index) & set(vix_df.index)):
         market_time = _market_time(ts)
         if market_time >= FORCE_EXIT_TIME:
             break
 
         vix_val = float(vix_df.loc[ts, "close"])
-        if vix_val >= VIX_MAX:
+        if market_time < filters.entry_time or vix_val >= filters.india_vix_below:
             continue
 
         spot = float(spot_df.loc[ts, "close"])
-        strike = preferred_atm_strike(spot)
+        strike = preferred_atm_strike(spot) if filters.only_100s else nearest_available_strike(spot)
         if strike is None:
             continue
         ce_candidate = repo.get_instrument(UNDERLYING, "CE", expiry, strike)
@@ -281,12 +293,7 @@ def run_strategy_for_day(trading_date: date, mode: Mode = Mode.BACKTEST) -> Stra
             continue
 
         combined = ce_p + pe_p
-        normal_entry = market_time >= MARKET_OPEN_TIME and combined <= INITIAL_ENTRY_MAX_PREMIUM
-        forced_entry = market_time >= FORCED_INITIAL_ENTRY_TIME
-
-        # V3: "3pm is my price". If no normal entry happened before 3:01 PM,
-        # use the 3:01 PM spot to lock ATM and enter regardless of premium.
-        if normal_entry or forced_entry:
+        if combined <= filters.combined_premium:
             entry_ts = ts
             locked_atm_strike, ce_instr, pe_instr = strike, ce_candidate, pe_candidate
             lot_size = int(ce_instr["lot_size"])
@@ -312,8 +319,8 @@ def run_strategy_for_day(trading_date: date, mode: Mode = Mode.BACKTEST) -> Stra
     record.vix_at_entry = vix_at_entry
     record.ce_lots_bought = INITIAL_LOTS
     record.pe_lots_bought = INITIAL_LOTS
-    _record_fill(record, entry_ts, "BUY", "CE", INITIAL_LOTS, ce_price_at_entry, "INITIAL_FORCED_1501" if forced_entry else "INITIAL")
-    _record_fill(record, entry_ts, "BUY", "PE", INITIAL_LOTS, pe_price_at_entry, "INITIAL_FORCED_1501" if forced_entry else "INITIAL")
+    _record_fill(record, entry_ts, "BUY", "CE", INITIAL_LOTS, ce_price_at_entry, "INITIAL")
+    _record_fill(record, entry_ts, "BUY", "PE", INITIAL_LOTS, pe_price_at_entry, "INITIAL")
 
     ce_df = repo.get_candles(ce_instr["id"], entry_ts, entry_window_end).set_index("ts")
     pe_df = repo.get_candles(pe_instr["id"], entry_ts, entry_window_end).set_index("ts")

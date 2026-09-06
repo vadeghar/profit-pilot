@@ -10,35 +10,22 @@ V2 entry change:
   - The first observation satisfying both conditions triggers entry.
   - The 15:35 force-exit remains unchanged.
 
-Why this doesn't subclass strategies.base.OptionsStrategy:
-The generic engine (backtest/engine.py) assumes one fixed entry timestamp
-per trade, a static set of legs built once at entry, and a single full
-exit. This strategy instead:
-  - polls continuously from market open for its entry condition (VIX + premium
-    thresholds);
-  - adds legs twice more intraday (2A, 2B averaging);
-  - exits partially at each target level, then protects the remainder
-    with a cost-based stop;
-  - runs on ANY eligible trading day, not a fixed weekday.
-So it gets its own self-contained state machine here, and its own
-backtest runner in backend/backtest/atm_straddle_engine.py, which adapts
-its richer trade record into the generic TradeResult shape so the
-existing Strategy screen / BacktestModal UI renders it unchanged.
+Scope:
+  - This strategy is STRICTLY for NIFTY weekly expiry trading days.
+  - Expiry eligibility and actual expiry dates come from
+    public.nifty_expiry_calendar (underlying='NIFTY', expiry_type='WEEKLY').
+  - scheduled_date is considered so holiday-shifted expiries are handled;
+    expiry_date is the actual trading/expiry date used by the strategy.
+  - Non-expiry dates are ignored before any market-data or option calculation.
 
-v1 scope decisions retained in v2:
-  - Current week's expiry (nearest expiry >= trading_date) is used for
-    the CE/PE legs.
-  - India VIX is read from instruments.underlying_symbol == 'INDIA VIX',
-    instrument_type == 'INDEX'.
-  - ATM strike = nearest available strike to NIFTY spot at the moment the
-    VIX / premium entry conditions are first satisfied.
-  - Intrabar execution policy remains the same deterministic v1 policy:
-    force-exit -> hard SL -> cost exit -> target -> 2A -> 2B, using the
-    combined LOW proxy for falling-premium checks and combined HIGH proxy
-    for rising-premium checks.
-  - run_strategy_for_day() remains the single state machine used by both
-    backtest and future live deployment; only the deploy eligibility gate
-    differs.
+Why this doesn't subclass strategies.base.OptionsStrategy:
+The generic engine assumes one fixed entry timestamp per trade, a static set
+of legs built once at entry, and a single full exit. This strategy instead:
+  - polls continuously from market open for its entry condition;
+  - adds legs twice more intraday (2A, 2B averaging);
+  - exits partially at each target level, then protects the remainder with
+    a cost-based stop;
+  - runs its own state machine and backtest adapter.
 """
 import logging
 from dataclasses import dataclass, field
@@ -62,21 +49,17 @@ FORCE_EXIT_TIME = time(15, 35)
 MARKET_TZ = ZoneInfo("Asia/Kolkata")
 
 VIX_MAX = 15.0
-
 INITIAL_ENTRY_MAX_PREMIUM = 50.0
 LEVEL_2A_MAX_PREMIUM = 30.0
 LEVEL_2B_MAX_PREMIUM = 20.0
-
 INITIAL_TARGET = 100.0
 LEVEL_2A_TARGET = 65.0
 LEVEL_2B_TARGET = 45.0
-
 HARD_STOP_PREMIUM = 8.0
-
 INITIAL_LOTS = 2
 LEVEL_2A_ADD_LOTS = 2
 LEVEL_2B_ADD_LOTS = 2
-MAX_LOTS_PER_LEG = 6  # reached automatically once 2B has fired; not separately enforced
+MAX_LOTS_PER_LEG = 6
 
 
 class Mode(str, Enum):
@@ -100,64 +83,47 @@ class StrategyState(str, Enum):
 
 @dataclass
 class StraddleTradeRecord:
-    """Matches Section 23's trade record requirements. Fields for stages
-    that did not occur are left as None, per the spec."""
     strategy_id: str = STRATEGY_ID
     mode: str = Mode.BACKTEST.value
     trading_date: Optional[date] = None
-
     expiry_date: Optional[date] = None
     is_expiry_day: Optional[bool] = None
-
     initial_entry_timestamp: Optional[datetime] = None
     initial_entry_spot: Optional[float] = None
     atm_strike: Optional[float] = None
     lot_size: Optional[int] = None
-
     ce_instrument_id: Optional[int] = None
     pe_instrument_id: Optional[int] = None
     ce_trading_symbol: Optional[str] = None
     pe_trading_symbol: Optional[str] = None
-
     initial_ce_price: Optional[float] = None
     initial_pe_price: Optional[float] = None
     initial_combined_premium: Optional[float] = None
-
     vix_at_entry: Optional[float] = None
-
     level_2a_timestamp: Optional[datetime] = None
     level_2a_ce_price: Optional[float] = None
     level_2a_pe_price: Optional[float] = None
     level_2a_combined_premium: Optional[float] = None
-
     level_2b_timestamp: Optional[datetime] = None
     level_2b_ce_price: Optional[float] = None
     level_2b_pe_price: Optional[float] = None
     level_2b_combined_premium: Optional[float] = None
-
     target_timestamp: Optional[datetime] = None
     target_level: Optional[float] = None
     target_combined_premium: Optional[float] = None
-
     cost_premium: Optional[float] = None
-
     hard_sl_timestamp: Optional[datetime] = None
     hard_sl_premium: Optional[float] = None
-
     final_exit_timestamp: Optional[datetime] = None
     final_exit_reason: Optional[str] = None
-
     ce_lots_bought: int = 0
     pe_lots_bought: int = 0
     ce_lots_sold: int = 0
     pe_lots_sold: int = 0
-
     realized_pnl: float = 0.0
     charges: Optional[float] = None
     net_pnl: Optional[float] = None
-
     status: str = StrategyState.NO_ENTRY.value
-
     fills: list = field(default_factory=list)
 
     @property
@@ -175,11 +141,9 @@ class StraddleTradeRecord:
 
 
 class NiftyATMStraddleStrategy:
-    """Thin descriptor so this strategy can sit in api/main.py's STRATEGIES
-    dict next to the OptionsStrategy-based strategies."""
     name = "NIFTY ATM Straddle"
     underlying = UNDERLYING
-    frequency = "Daily · entry when VIX < 15 and premium <= 50"
+    frequency = "NIFTY weekly expiry days · entry when VIX < 15 and premium <= 50"
     strategy_id = STRATEGY_ID
     strategy_start_date = STRATEGY_START_DATE
 
@@ -198,16 +162,11 @@ def _current_week_expiry(trading_date: date) -> Optional[date]:
     return expiries[0] if expiries else None
 
 
-def _record_fill(record: StraddleTradeRecord, ts: datetime, action: str, option_type: str,
-                  lots: int, price: float, tag: str) -> None:
-    record.fills.append({
-        "ts": ts, "action": action, "option_type": option_type,
-        "lots": lots, "price": price, "tag": tag,
-    })
+def _record_fill(record: StraddleTradeRecord, ts: datetime, action: str, option_type: str, lots: int, price: float, tag: str) -> None:
+    record.fills.append({"ts": ts, "action": action, "option_type": option_type, "lots": lots, "price": price, "tag": tag})
 
 
-def _exit_all(record: StraddleTradeRecord, ts: datetime, ce_close: float, pe_close: float,
-              ce_lots: int, pe_lots: int, reason: str) -> None:
+def _exit_all(record: StraddleTradeRecord, ts: datetime, ce_close: float, pe_close: float, ce_lots: int, pe_lots: int, reason: str) -> None:
     if ce_lots > 0:
         record.ce_lots_sold += ce_lots
         _record_fill(record, ts, "SELL", "CE", ce_lots, ce_close, reason)
@@ -231,14 +190,7 @@ def _compute_pnl(record: StraddleTradeRecord) -> float:
 
 
 def run_strategy_for_day(trading_date: date, mode: Mode = Mode.BACKTEST) -> StraddleTradeRecord:
-    """Run the V2 state machine against 1-minute candles.
-
-    Initial entry is evaluated from market open (09:15) until 15:35. The
-    entry gate is ONLY:
-        India VIX < 15
-        combined CE + PE premium <= 50
-    No time-of-day entry restriction remains.
-    """
+    """Run the V2 state machine only on an NIFTY weekly expiry day."""
     record = StraddleTradeRecord(trading_date=trading_date, mode=mode.value)
 
     if trading_date < STRATEGY_START_DATE:
@@ -247,19 +199,24 @@ def run_strategy_for_day(trading_date: date, mode: Mode = Mode.BACKTEST) -> Stra
 
     expiry = _current_week_expiry(trading_date)
     record.expiry_date = expiry
-    record.is_expiry_day = (expiry == trading_date) if expiry else None
+    record.is_expiry_day = (expiry == trading_date) if expiry else False
 
-    if mode == Mode.DEPLOY and not record.is_expiry_day:
-        record.status = StrategyState.NOT_DEPLOYED_NON_EXPIRY_DAY.value
+    # HARD SCOPE RULE: this strategy is expiry-day-only in BOTH backtest and deploy.
+    if not record.is_expiry_day:
+        record.status = (
+            StrategyState.NOT_DEPLOYED_NON_EXPIRY_DAY.value
+            if mode == Mode.DEPLOY
+            else StrategyState.NOT_APPLICABLE.value
+        )
         return record
 
     if expiry is None:
-        logger.warning("[%s] SKIP: no NIFTY weekly expiry found on/after this date", trading_date)
+        logger.warning("[%s] SKIP: no NIFTY weekly expiry found in nifty_expiry_calendar", trading_date)
         record.status = StrategyState.NO_ENTRY.value
         return record
 
-    index_id = repo.get_index_instrument_id(UNDERLYING)
-    vix_id = repo.get_index_instrument_id(VIX_UNDERLYING)
+    index_id = repo.get_index_instrument_id(UNDERLYING, trading_date=trading_date)
+    vix_id = repo.get_index_instrument_id(VIX_UNDERLYING, trading_date=trading_date)
     if index_id is None or vix_id is None:
         if index_id is None:
             logger.warning("[%s] SKIP: no INDEX instrument row for underlying=%s", trading_date, UNDERLYING)
@@ -268,8 +225,8 @@ def run_strategy_for_day(trading_date: date, mode: Mode = Mode.BACKTEST) -> Stra
         record.status = StrategyState.NO_ENTRY.value
         return record
 
-    entry_window_end = datetime.combine(trading_date, FORCE_EXIT_TIME)
-    day_start = datetime.combine(trading_date, MARKET_OPEN_TIME)
+    entry_window_end = datetime.combine(trading_date, FORCE_EXIT_TIME, tzinfo=MARKET_TZ)
+    day_start = datetime.combine(trading_date, MARKET_OPEN_TIME, tzinfo=MARKET_TZ)
 
     spot_df = repo.get_candles(index_id, day_start, entry_window_end)
     vix_df = repo.get_candles(vix_id, day_start, entry_window_end)
@@ -279,9 +236,6 @@ def run_strategy_for_day(trading_date: date, mode: Mode = Mode.BACKTEST) -> Stra
     spot_df = spot_df.set_index("ts")
     vix_df = vix_df.set_index("ts")
 
-    # Initial entry search starts at market open. There is intentionally no
-    # 14:00/time gate: the first observation with VIX < 15 and premium <= 50
-    # is the entry.
     entry_ts = None
     locked_atm_strike = ce_instr = pe_instr = lot_size = None
     ce_price_at_entry = pe_price_at_entry = combined_at_entry = None
@@ -308,7 +262,6 @@ def run_strategy_for_day(trading_date: date, mode: Mode = Mode.BACKTEST) -> Stra
         combined = ce_p + pe_p
         if combined > INITIAL_ENTRY_MAX_PREMIUM:
             continue
-
         entry_ts = ts
         locked_atm_strike, ce_instr, pe_instr = strike, ce_candidate, pe_candidate
         lot_size = int(ce_instr["lot_size"])
@@ -345,7 +298,6 @@ def run_strategy_for_day(trading_date: date, mode: Mode = Mode.BACKTEST) -> Stra
     level_2a_done = level_2b_done = target_done = False
     ce_lots = pe_lots = INITIAL_LOTS
     cost_premium = INITIAL_ENTRY_MAX_PREMIUM
-
     common_ts = sorted(set(ce_df.index) & set(pe_df.index))
 
     for ts in common_ts:
@@ -377,75 +329,60 @@ def run_strategy_for_day(trading_date: date, mode: Mode = Mode.BACKTEST) -> Stra
             return record
 
         if state == StrategyState.INITIAL and combined_high >= INITIAL_TARGET:
-            ce_lots -= 1
-            pe_lots -= 1
-            record.ce_lots_sold += 1
-            record.pe_lots_sold += 1
+            ce_lots -= 1; pe_lots -= 1
+            record.ce_lots_sold += 1; record.pe_lots_sold += 1
             _record_fill(record, ts, "SELL", "CE", 1, ce_close, "TARGET_INITIAL")
             _record_fill(record, ts, "SELL", "PE", 1, pe_close, "TARGET_INITIAL")
             target_done, cost_premium = True, INITIAL_ENTRY_MAX_PREMIUM
             record.target_timestamp, record.target_level = ts, INITIAL_TARGET
             record.target_combined_premium, record.cost_premium = combined_close, cost_premium
-            state = StrategyState.TARGETED_INITIAL
-            record.status = state.value
+            state = StrategyState.TARGETED_INITIAL; record.status = state.value
             continue
 
         if state == StrategyState.AFTER_2A and combined_high >= LEVEL_2A_TARGET:
-            ce_lots -= 2
-            pe_lots -= 2
-            record.ce_lots_sold += 2
-            record.pe_lots_sold += 2
+            ce_lots -= 2; pe_lots -= 2
+            record.ce_lots_sold += 2; record.pe_lots_sold += 2
             _record_fill(record, ts, "SELL", "CE", 2, ce_close, "TARGET_2A")
             _record_fill(record, ts, "SELL", "PE", 2, pe_close, "TARGET_2A")
             target_done, cost_premium = True, LEVEL_2A_MAX_PREMIUM
             record.target_timestamp, record.target_level = ts, LEVEL_2A_TARGET
             record.target_combined_premium, record.cost_premium = combined_close, cost_premium
-            state = StrategyState.TARGETED_2A
-            record.status = state.value
+            state = StrategyState.TARGETED_2A; record.status = state.value
             continue
 
         if state == StrategyState.AFTER_2B and combined_high >= LEVEL_2B_TARGET:
-            ce_lots -= 3
-            pe_lots -= 3
-            record.ce_lots_sold += 3
-            record.pe_lots_sold += 3
+            ce_lots -= 3; pe_lots -= 3
+            record.ce_lots_sold += 3; record.pe_lots_sold += 3
             _record_fill(record, ts, "SELL", "CE", 3, ce_close, "TARGET_2B")
             _record_fill(record, ts, "SELL", "PE", 3, pe_close, "TARGET_2B")
             target_done, cost_premium = True, LEVEL_2B_MAX_PREMIUM
             record.target_timestamp, record.target_level = ts, LEVEL_2B_TARGET
             record.target_combined_premium, record.cost_premium = combined_close, cost_premium
-            state = StrategyState.TARGETED_2B
-            record.status = state.value
+            state = StrategyState.TARGETED_2B; record.status = state.value
             continue
 
         if state == StrategyState.INITIAL and not level_2a_done and combined_low <= LEVEL_2A_MAX_PREMIUM:
-            ce_lots += LEVEL_2A_ADD_LOTS
-            pe_lots += LEVEL_2A_ADD_LOTS
-            record.ce_lots_bought += LEVEL_2A_ADD_LOTS
-            record.pe_lots_bought += LEVEL_2A_ADD_LOTS
+            ce_lots += LEVEL_2A_ADD_LOTS; pe_lots += LEVEL_2A_ADD_LOTS
+            record.ce_lots_bought += LEVEL_2A_ADD_LOTS; record.pe_lots_bought += LEVEL_2A_ADD_LOTS
             _record_fill(record, ts, "BUY", "CE", LEVEL_2A_ADD_LOTS, ce_close, "LEVEL_2A")
             _record_fill(record, ts, "BUY", "PE", LEVEL_2A_ADD_LOTS, pe_close, "LEVEL_2A")
             level_2a_done = True
             record.level_2a_timestamp = ts
             record.level_2a_ce_price, record.level_2a_pe_price = ce_close, pe_close
             record.level_2a_combined_premium = combined_close
-            state = StrategyState.AFTER_2A
-            record.status = state.value
+            state = StrategyState.AFTER_2A; record.status = state.value
             continue
 
         if state == StrategyState.AFTER_2A and not level_2b_done and combined_low <= LEVEL_2B_MAX_PREMIUM:
-            ce_lots += LEVEL_2B_ADD_LOTS
-            pe_lots += LEVEL_2B_ADD_LOTS
-            record.ce_lots_bought += LEVEL_2B_ADD_LOTS
-            record.pe_lots_bought += LEVEL_2B_ADD_LOTS
+            ce_lots += LEVEL_2B_ADD_LOTS; pe_lots += LEVEL_2B_ADD_LOTS
+            record.ce_lots_bought += LEVEL_2B_ADD_LOTS; record.pe_lots_bought += LEVEL_2B_ADD_LOTS
             _record_fill(record, ts, "BUY", "CE", LEVEL_2B_ADD_LOTS, ce_close, "LEVEL_2B")
             _record_fill(record, ts, "BUY", "PE", LEVEL_2B_ADD_LOTS, pe_close, "LEVEL_2B")
             level_2b_done = True
             record.level_2b_timestamp = ts
             record.level_2b_ce_price, record.level_2b_pe_price = ce_close, pe_close
             record.level_2b_combined_premium = combined_close
-            state = StrategyState.AFTER_2B
-            record.status = state.value
+            state = StrategyState.AFTER_2B; record.status = state.value
             continue
 
     if common_ts:

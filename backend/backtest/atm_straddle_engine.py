@@ -12,8 +12,9 @@ screen / BacktestModal UI can render this strategy without any frontend
 changes.
 """
 import logging
-from datetime import date
+from datetime import date, datetime
 from typing import Iterator
+from zoneinfo import ZoneInfo
 
 from backtest.engine import BacktestSummary, TradeResult
 from db import repository as repo
@@ -30,6 +31,7 @@ from strategies.nifty_atm_straddle import (
 logger = logging.getLogger(__name__)
 
 _TERMINAL_STATUSES = {StrategyState.CLOSED.value}
+MARKET_TZ = ZoneInfo("Asia/Kolkata")
 
 
 def _legs_summary(record: StraddleTradeRecord) -> list[str]:
@@ -78,7 +80,7 @@ def iter_trades(strategy: NiftyATMStraddleStrategy, start: date, end: date) -> I
     with debug_log_path.open("w", encoding="utf-8") as handle:
         handle.write(
             "NIFTY ATM STRADDLE V2 BACKTEST ENTRY DIAGNOSTIC\n"
-            f"RUN_STARTED_IST={__import__('datetime').datetime.now(__import__('zoneinfo').ZoneInfo('Asia/Kolkata')).strftime('%Y-%m-%d %H:%M:%S IST')}\n"
+            f"RUN_STARTED_IST={datetime.now(MARKET_TZ).strftime('%Y-%m-%d %H:%M:%S IST')}\n"
             f"REQUESTED_RANGE={start}..{end}\n"
             "Each eligible trading date is logged below.\n\n"
         )

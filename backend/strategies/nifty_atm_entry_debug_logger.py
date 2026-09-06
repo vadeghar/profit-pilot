@@ -10,14 +10,17 @@ logger = logging.getLogger(__name__)
 
 UNDERLYING = "NIFTY 50"
 VIX_UNDERLYING = "INDIA VIX"
-DEBUG_DATE = date(2026, 8, 4)
 MARKET_OPEN = time(9, 15)
 FORCE_EXIT = time(15, 35)
 VIX_MAX = 15.0
 INITIAL_MAX_PREMIUM = 50.0
 MARKET_TZ = ZoneInfo("Asia/Kolkata")
-UTC = ZoneInfo("UTC")
-LOG_PATH = Path(__file__).resolve().parents[1] / "logs" / "nifty_atm_entry_debug_20260804.log"
+
+
+def create_run_log_path() -> Path:
+    """Create a unique IST timestamped log path for one backtest run."""
+    timestamp = datetime.now(MARKET_TZ).strftime("%Y%m%d_%H%M%S_%f")
+    return Path(__file__).resolve().parents[1] / "logs" / f"nifty_atm_entry_debug_{timestamp}.log"
 
 
 def _market_ts(ts: datetime) -> str:
@@ -27,15 +30,12 @@ def _market_ts(ts: datetime) -> str:
     return ts.astimezone(MARKET_TZ).strftime("%Y-%m-%d %H:%M:%S IST")
 
 
-def run_entry_debug_log(trading_date: date) -> None:
-    """Write the complete V2 entry scan for the diagnostic date only."""
-    if trading_date != DEBUG_DATE:
-        return
-
+def run_entry_debug_log(trading_date: date, log_path: Path) -> None:
+    """Append the complete V2 entry scan for one trading date to a run log."""
     logger.info(
-        "[NIFTY ATM V2 DEBUG] Starting entry scan for %s | output=%s",
+        "[NIFTY ATM V2 DEBUG] Running entry scan for %s | output=%s",
         trading_date,
-        LOG_PATH,
+        log_path,
     )
 
     lines: list[str] = [
@@ -50,7 +50,7 @@ def run_entry_debug_log(trading_date: date) -> None:
     expiries = repo.get_weekly_expiries(UNDERLYING, "CE", on_or_after=trading_date, limit=1)
     if not expiries:
         lines.append("RESULT=NO_ENTRY | reason=NO_WEEKLY_EXPIRY")
-        _write(lines)
+        _write(lines, log_path)
         return
     expiry = expiries[0]
     lines.append(f"EXPIRY={expiry}")
@@ -59,7 +59,7 @@ def run_entry_debug_log(trading_date: date) -> None:
     vix_id = repo.get_index_instrument_id(VIX_UNDERLYING, trading_date=trading_date)
     if index_id is None or vix_id is None:
         lines.append(f"RESULT=NO_ENTRY | reason=MISSING_INDEX_INSTRUMENT | index_id={index_id} | vix_id={vix_id}")
-        _write(lines)
+        _write(lines, log_path)
         return
 
     start = datetime.combine(trading_date, MARKET_OPEN, tzinfo=MARKET_TZ)
@@ -68,7 +68,7 @@ def run_entry_debug_log(trading_date: date) -> None:
     vix_df = repo.get_candles(vix_id, start, end).set_index("ts")
     if spot_df.empty or vix_df.empty:
         lines.append(f"RESULT=NO_ENTRY | reason=EMPTY_INDEX_DATA | spot_rows={len(spot_df)} | vix_rows={len(vix_df)}")
-        _write(lines)
+        _write(lines, log_path)
         return
 
     common_ts = sorted(set(spot_df.index) & set(vix_df.index))
@@ -131,7 +131,7 @@ def run_entry_debug_log(trading_date: date) -> None:
             break
 
     lines.append("=== V2 INITIAL ENTRY SCAN END ===")
-    _write(lines)
+    _write(lines, log_path)
 
 
 def pd_is_na(value) -> bool:
@@ -139,7 +139,8 @@ def pd_is_na(value) -> bool:
     return value is None or str(value) == "NaT"
 
 
-def _write(lines: list[str]) -> None:
-    LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    LOG_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    logger.info("[NIFTY ATM V2 DEBUG] Entry diagnostic written: %s", LOG_PATH)
+def _write(lines: list[str], log_path: Path) -> None:
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("a", encoding="utf-8") as handle:
+        handle.write("\n".join(lines) + "\n")
+    logger.info("[NIFTY ATM V2 DEBUG] Entry diagnostic appended: %s", log_path)

@@ -54,7 +54,7 @@ const dateTime = (iso: string) =>
 const todayStr = () => new Date().toISOString().slice(0, 10);
 const daysAgoStr = (n: number) => new Date(Date.now() - n * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
-const entryTimes = Array.from({ length: 106 }, (_, index) => {
+const entryTimes = Array.from({ length: (15 * 60 + 1) - (9 * 60 + 16) + 1 }, (_, index) => {
   const totalMinutes = 9 * 60 + 16 + index;
   return `${String(Math.floor(totalMinutes / 60)).padStart(2, '0')}:${String(totalMinutes % 60).padStart(2, '0')}`;
 }).filter((value) => value <= '15:01');

@@ -11,9 +11,9 @@ V2 entry change:
   - The 15:35 force-exit remains unchanged.
 
 Scope:
-  - This strategy is STRICTLY for NIFTY weekly expiry trading days.
+  - This strategy is STRICTLY for NIFTY expiry trading days.
   - Expiry eligibility and actual expiry dates come from
-    public.nifty_expiry_calendar (underlying='NIFTY', expiry_type='WEEKLY').
+    public.nifty_expiry_calendar (underlying='NIFTY', expiry_type='WEEKLY' or 'MONTHLY').
   - scheduled_date is considered so holiday-shifted expiries are handled;
     expiry_date is the actual trading/expiry date used by the strategy.
   - Non-expiry dates are ignored before any market-data or option calculation.
@@ -143,7 +143,7 @@ class StraddleTradeRecord:
 class NiftyATMStraddleStrategy:
     name = "NIFTY ATM Straddle"
     underlying = UNDERLYING
-    frequency = "NIFTY weekly expiry days · entry when VIX < 15 and premium <= 50"
+    frequency = "NIFTY weekly/monthly expiry days · entry when VIX < 15 and premium <= 50"
     strategy_id = STRATEGY_ID
     strategy_start_date = STRATEGY_START_DATE
 
@@ -157,8 +157,8 @@ def _market_time(ts: datetime) -> time:
     return ts.time().replace(tzinfo=None)
 
 
-def _current_week_expiry(trading_date: date) -> Optional[date]:
-    expiries = repo.get_weekly_expiries(UNDERLYING, "CE", on_or_after=trading_date, limit=1)
+def _current_expiry(trading_date: date) -> Optional[date]:
+    expiries = repo.get_nifty_expiry_dates(UNDERLYING, on_or_after=trading_date, limit=1)
     return expiries[0] if expiries else None
 
 
@@ -190,14 +190,14 @@ def _compute_pnl(record: StraddleTradeRecord) -> float:
 
 
 def run_strategy_for_day(trading_date: date, mode: Mode = Mode.BACKTEST) -> StraddleTradeRecord:
-    """Run the V2 state machine only on an NIFTY weekly expiry day."""
+    """Run the V2 state machine only on a NIFTY weekly or monthly expiry day."""
     record = StraddleTradeRecord(trading_date=trading_date, mode=mode.value)
 
     if trading_date < STRATEGY_START_DATE:
         record.status = StrategyState.NOT_APPLICABLE.value
         return record
 
-    expiry = _current_week_expiry(trading_date)
+    expiry = _current_expiry(trading_date)
     record.expiry_date = expiry
     record.is_expiry_day = (expiry == trading_date) if expiry else False
 
@@ -211,7 +211,7 @@ def run_strategy_for_day(trading_date: date, mode: Mode = Mode.BACKTEST) -> Stra
         return record
 
     if expiry is None:
-        logger.warning("[%s] SKIP: no NIFTY weekly expiry found in nifty_expiry_calendar", trading_date)
+        logger.warning("[%s] SKIP: no NIFTY weekly/monthly expiry found in nifty_expiry_calendar", trading_date)
         record.status = StrategyState.NO_ENTRY.value
         return record
 

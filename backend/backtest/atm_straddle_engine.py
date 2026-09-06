@@ -17,7 +17,7 @@ from typing import Iterator
 
 from backtest.engine import BacktestSummary, TradeResult
 from db import repository as repo
-from strategies.nifty_atm_entry_debug_logger import run_entry_debug_log
+from strategies.nifty_atm_entry_debug_logger import create_run_log_path, run_entry_debug_log
 from strategies.nifty_atm_straddle import (
     Mode,
     NiftyATMStraddleStrategy,
@@ -65,26 +65,39 @@ def iter_trades(strategy: NiftyATMStraddleStrategy, start: date, end: date) -> I
     """Duck-type compatible with backtest.engine.iter_trades's call shape,
     so api/main.py can dispatch to either engine the same way."""
     trading_days = repo.get_trading_days(UNDERLYING, start, end)
-    debug_date = date(2026, 8, 4)
+    debug_log_path = create_run_log_path()
+
+    logger.info(
+        "[NIFTY ATM V2 DEBUG] Backtest diagnostic logging enabled | "
+        "range=%s..%s | output=%s",
+        start,
+        end,
+        debug_log_path,
+    )
+
+    with debug_log_path.open("w", encoding="utf-8") as handle:
+        handle.write(
+            "NIFTY ATM STRADDLE V2 BACKTEST ENTRY DIAGNOSTIC\n"
+            f"RUN_STARTED_IST={__import__('datetime').datetime.now(__import__('zoneinfo').ZoneInfo('Asia/Kolkata')).strftime('%Y-%m-%d %H:%M:%S IST')}\n"
+            f"REQUESTED_RANGE={start}..{end}\n"
+            "Each eligible trading date is logged below.\n\n"
+        )
+
     for trading_date in trading_days:
         if trading_date < strategy.strategy_start_date:
             continue  # Section 3: not applicable before the strategy start date
 
-        if trading_date == debug_date:
-            logger.info(
-                "[NIFTY ATM V2 DEBUG] Running entry diagnostics for %s | "
-                "range=%s..%s | branch-specific diagnostic enabled",
+        try:
+            run_entry_debug_log(trading_date, debug_log_path)
+        except Exception:
+            # Diagnostics must never change or break the actual backtest.
+            logger.exception(
+                "[NIFTY ATM V2 DEBUG] Entry diagnostic failed for %s; continuing backtest",
                 trading_date,
-                start,
-                end,
             )
-            try:
-                run_entry_debug_log(trading_date)
-            except Exception:
-                # Diagnostics must never change or break the actual backtest.
-                logger.exception(
-                    "[NIFTY ATM V2 DEBUG] Entry diagnostic failed for %s; continuing backtest",
-                    trading_date,
+            with debug_log_path.open("a", encoding="utf-8") as handle:
+                handle.write(
+                    f"DATE={trading_date} | RESULT=DIAGNOSTIC_FAILED | see backend logger for traceback\n"
                 )
 
         record = run_strategy_for_day(trading_date, mode=Mode.BACKTEST)

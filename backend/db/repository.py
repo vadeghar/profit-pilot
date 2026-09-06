@@ -52,7 +52,7 @@ def get_instrument(underlying_symbol: str, instrument_type: str, expiry: date, s
     return dict(row) if row else None
 
 
-def get_weekly_expiries(underlying_symbol: str, instrument_type: str = "CE", on_or_after: Optional[date] = None, limit: int = 20) -> list[date]:
+def get_nifty_expiry_dates(underlying_symbol: str, on_or_after: Optional[date] = None, limit: int = 20) -> list[date]:
     """Return NIFTY expiry dates (weekly or monthly) from nifty_expiry_calendar.
 
     The expiry calendar is the strategy source of truth. For NIFTY, the
@@ -78,6 +78,12 @@ def get_weekly_expiries(underlying_symbol: str, instrument_type: str = "CE", on_
     with engine.connect() as conn:
         rows = conn.execute(query, {"underlying": calendar_underlying, "on_or_after": on_or_after, "limit": limit}).fetchall()
     return [r[0] for r in rows]
+
+
+# Backward-compatible name for callers outside this strategy. New code should
+# use get_nifty_expiry_dates(), because the lookup includes monthly expiries.
+def get_weekly_expiries(underlying_symbol: str, instrument_type: str = "CE", on_or_after: Optional[date] = None, limit: int = 20) -> list[date]:
+    return get_nifty_expiry_dates(underlying_symbol, on_or_after=on_or_after, limit=limit)
 
 
 def get_index_instrument_id(underlying_symbol: str, trading_date: Optional[date] = None) -> Optional[int]:

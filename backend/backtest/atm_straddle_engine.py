@@ -1,15 +1,8 @@
 """
-Backtest runner for the NIFTY ATM Straddle strategy (the "Historical
-Backtester" box in the spec's Section 25 diagram). Iterates every
-eligible trading day and calls strategies.nifty_atm_straddle's
-run_strategy_for_day() for each one -- the exact same state machine a
-future live-deployment runner would call, per the spec's own
-single-engine principle. Only the day-iteration and `mode` differ here.
+Backtest runner for the NIFTY ATM Straddle strategy.
 
-Adapts the rich StraddleTradeRecord (Section 23's trade record) into
-backtest.engine's generic TradeResult shape so the existing Strategy
-screen / BacktestModal UI can render this strategy without any frontend
-changes.
+The strategy is strictly an NIFTY weekly-expiry-day strategy. Non-expiry
+trading dates are ignored before diagnostics or strategy calculations are run.
 """
 import logging
 from datetime import date, datetime
@@ -29,14 +22,11 @@ from strategies.nifty_atm_straddle import (
 )
 
 logger = logging.getLogger(__name__)
-
 _TERMINAL_STATUSES = {StrategyState.CLOSED.value}
 MARKET_TZ = ZoneInfo("Asia/Kolkata")
 
 
 def _legs_summary(record: StraddleTradeRecord) -> list[str]:
-    """One line per fill, e.g. 'BUY 2x 25000 CE @ 28.0 [INITIAL]' -- shown
-    verbatim in the BacktestModal trade grid's legs column."""
     return [
         f"{f['action']} {f['lots']}x {record.atm_strike} {f['option_type']} @ {f['price']} [{f['tag']}]"
         for f in record.fills
@@ -63,15 +53,20 @@ def _to_trade_result(record: StraddleTradeRecord) -> TradeResult:
     )
 
 
+def _is_expiry_day(trading_date: date) -> bool:
+    """Return True only when trading_date itself is the next weekly expiry."""
+    expiries = repo.get_weekly_expiries(UNDERLYING, "CE", on_or_after=trading_date, limit=1)
+    return bool(expiries and expiries[0] == trading_date)
+
+
 def iter_trades(strategy: NiftyATMStraddleStrategy, start: date, end: date) -> Iterator[TradeResult]:
-    """Duck-type compatible with backtest.engine.iter_trades's call shape,
-    so api/main.py can dispatch to either engine the same way."""
+    """Run diagnostics and the strategy state machine only on NIFTY expiry days."""
     trading_days = repo.get_trading_days(UNDERLYING, start, end)
     debug_log_path = create_run_log_path()
 
     logger.info(
         "[NIFTY ATM V2 DEBUG] Backtest diagnostic logging enabled | "
-        "range=%s..%s | output=%s",
+        "expiry-days-only | range=%s..%s | output=%s",
         start,
         end,
         debug_log_path,
@@ -82,19 +77,24 @@ def iter_trades(strategy: NiftyATMStraddleStrategy, start: date, end: date) -> I
             "NIFTY ATM STRADDLE V2 BACKTEST ENTRY DIAGNOSTIC\n"
             f"RUN_STARTED_IST={datetime.now(MARKET_TZ).strftime('%Y-%m-%d %H:%M:%S IST')}\n"
             f"REQUESTED_RANGE={start}..{end}\n"
-            "Each eligible trading date is logged below.\n\n"
+            "SCOPE=NIFTY WEEKLY EXPIRY DAYS ONLY\n"
+            "Non-expiry trading dates are intentionally ignored and are not logged.\n\n"
         )
 
     for trading_date in trading_days:
         if trading_date < strategy.strategy_start_date:
-            continue  # Section 3: not applicable before the strategy start date
+            continue
+
+        # HARD SCOPE RULE: no diagnostic scan and no strategy state-machine
+        # calculation is performed for a non-expiry trading date.
+        if not _is_expiry_day(trading_date):
+            continue
 
         try:
             run_entry_debug_log(trading_date, debug_log_path)
         except Exception:
-            # Diagnostics must never change or break the actual backtest.
             logger.exception(
-                "[NIFTY ATM V2 DEBUG] Entry diagnostic failed for %s; continuing backtest",
+                "[NIFTY ATM V2 DEBUG] Entry diagnostic failed for expiry date %s; continuing backtest",
                 trading_date,
             )
             with debug_log_path.open("a", encoding="utf-8") as handle:
@@ -104,7 +104,7 @@ def iter_trades(strategy: NiftyATMStraddleStrategy, start: date, end: date) -> I
 
         record = run_strategy_for_day(trading_date, mode=Mode.BACKTEST)
         if record.status not in _TERMINAL_STATUSES:
-            continue  # NO_ENTRY / NOT_APPLICABLE -- no trade fired that day
+            continue
         yield _to_trade_result(record)
 
 

@@ -1,4 +1,4 @@
-"""Diagnostic logger for the NIFTY ATM Straddle V2 expiry-day entry scan."""
+"""Diagnostic logger for the NIFTY ATM Straddle V3 expiry-day entry scan."""
 from datetime import date, datetime, time
 from pathlib import Path
 import logging
@@ -10,6 +10,7 @@ logger = logging.getLogger(__name__)
 UNDERLYING = "NIFTY 50"
 VIX_UNDERLYING = "INDIA VIX"
 MARKET_OPEN = time(9, 15)
+FORCED_INITIAL_ENTRY = time(15, 1)
 FORCE_EXIT = time(15, 35)
 VIX_MAX = 15.0
 INITIAL_MAX_PREMIUM = 50.0
@@ -37,13 +38,13 @@ def run_entry_debug_log(trading_date: date, log_path: Path) -> None:
     expiry = expiries[0]
 
     logger.info(
-        "[NIFTY ATM V2 DEBUG] Running EXPIRY-DAY entry scan for %s | output=%s",
+        "[NIFTY ATM V3 DEBUG] Running EXPIRY-DAY entry scan for %s | output=%s",
         trading_date, log_path,
     )
     lines: list[str] = [
         "=" * 200,
-        f"NIFTY ATM STRADDLE V2 ENTRY DEBUG | EXPIRY DATE={trading_date}",
-        f"Window={MARKET_OPEN} -> {FORCE_EXIT} IST | VIX < {VIX_MAX} | Combined CE+PE <= {INITIAL_MAX_PREMIUM}",
+        f"NIFTY ATM STRADDLE V3 ENTRY DEBUG | EXPIRY DATE={trading_date}",
+        f"Window={MARKET_OPEN} -> {FORCE_EXIT} IST | Normal: VIX < {VIX_MAX} and Combined CE+PE <= {INITIAL_MAX_PREMIUM} | Forced initial entry: {FORCED_INITIAL_ENTRY} IST when VIX < {VIX_MAX}",
         "SCOPE=NIFTY WEEKLY OR MONTHLY EXPIRY DAYS ONLY",
         "Index data policy=EXACT -> PREVIOUS AVAILABLE CANDLE (NO LOOK-AHEAD)",
         "Live deployment note: live deployment will use broker API market data; historical gap fallback should normally never be exercised.",
@@ -108,19 +109,28 @@ def run_entry_debug_log(trading_date: date, log_path: Path) -> None:
             lines.append(f"{_market_ts(ts)} | {vix:.4f} | {vix_source_text} | {spot:.2f} | {nifty_source_text} | ATM={strike} | CE={ce_p} | PE={pe_p} | RESULT=SKIP_MISSING_OPTION_PRICE | DATA={fallback_text}")
             continue
         combined = ce_p + pe_p
-        result = "INITIAL_ENTRY" if combined <= INITIAL_MAX_PREMIUM else "SKIP_PREMIUM"
+        market_time = ts.astimezone(MARKET_TZ).time().replace(tzinfo=None)
+        forced_entry = market_time >= FORCED_INITIAL_ENTRY
+        normal_entry = combined <= INITIAL_MAX_PREMIUM
+        if forced_entry:
+            result = "INITIAL_FORCED_1501"
+        elif normal_entry:
+            result = "INITIAL_ENTRY"
+        else:
+            result = "SKIP_PREMIUM"
         lines.append(
             f"{_market_ts(ts)} | {vix:.4f} | {vix_source_text} | {spot:.2f} | {nifty_source_text} | ATM={strike} | "
             f"CE={ce_p:.2f} | PE={pe_p:.2f} | CE+PE={combined:.2f} | RESULT={result} | DATA={fallback_text}"
         )
-        if combined <= INITIAL_MAX_PREMIUM:
-            lines.append(f"ENTRY_WOULD_BE_TAKEN={_market_ts(ts)} | ATM={strike} | CE={ce_p:.2f} | PE={pe_p:.2f} | SUM={combined:.2f} | VIX={vix:.4f} | VIX_SOURCE={vix_source_text} | NIFTY_SOURCE={nifty_source_text}")
+        if normal_entry or forced_entry:
+            entry_reason = "INITIAL_FORCED_1501" if forced_entry else "INITIAL"
+            lines.append(f"ENTRY_WOULD_BE_TAKEN={_market_ts(ts)} | REASON={entry_reason} | ATM={strike} | CE={ce_p:.2f} | PE={pe_p:.2f} | SUM={combined:.2f} | VIX={vix:.4f} | VIX_SOURCE={vix_source_text} | NIFTY_SOURCE={nifty_source_text}")
             logger.info(
-                "[NIFTY ATM V2 DEBUG] ENTRY_WOULD_BE_TAKEN=%s | ATM=%s | CE=%.2f | PE=%.2f | SUM=%.2f | VIX=%.4f | DATA=%s",
-                _market_ts(ts), strike, ce_p, pe_p, combined, vix, fallback_text,
+                "[NIFTY ATM V3 DEBUG] ENTRY_WOULD_BE_TAKEN=%s | REASON=%s | ATM=%s | CE=%.2f | PE=%.2f | SUM=%.2f | VIX=%.4f | DATA=%s",
+                _market_ts(ts), entry_reason, strike, ce_p, pe_p, combined, vix, fallback_text,
             )
             break
-    lines.append("=== V2 INITIAL ENTRY SCAN END ===")
+    lines.append("=== V3 INITIAL ENTRY SCAN END ===")
     _write(lines, log_path)
 
 
@@ -132,4 +142,4 @@ def _write(lines: list[str], log_path: Path) -> None:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("a", encoding="utf-8") as handle:
         handle.write("\n".join(lines) + "\n")
-    logger.info("[NIFTY ATM V2 DEBUG] Entry diagnostic appended: %s", log_path)
+    logger.info("[NIFTY ATM V3 DEBUG] Entry diagnostic appended: %s", log_path)

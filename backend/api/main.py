@@ -30,6 +30,7 @@ import queue
 import threading
 from datetime import date, datetime, time
 from pathlib import Path
+from typing import Optional
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query, Request
@@ -118,16 +119,38 @@ def _trade_payload(t) -> dict:
     }
 
 
-def _nifty_filters(entry_time: str, india_vix_below: float, combined_premium: float, only_100s: bool, force_at_1501: bool) -> NiftyATMEntryFilters:
+def _nifty_filters(
+    entry_time: str,
+    india_vix_below: float,
+    combined_premium: float,
+    only_100s: bool,
+    force_at_1501: bool,
+    max_forced_entry_premium: Optional[float] = None,
+    hard_stop_pct: Optional[float] = None,
+) -> NiftyATMEntryFilters:
     try:
         parsed_time = time.fromisoformat(entry_time)
     except ValueError as error:
         raise HTTPException(422, "entryTime must use HH:MM format") from error
-    if not time(9, 16) <= parsed_time <= time(15, 1):
-        raise HTTPException(422, "entryTime must be between 09:16 and 15:01")
+    # V6: was time(9, 16) -- excluded the actual 09:15 market open used by
+    # V2/V3/V4, so it could never be exactly reproduced via the API.
+    if not time(9, 15) <= parsed_time <= time(15, 1):
+        raise HTTPException(422, "entryTime must be between 09:15 and 15:01")
     if india_vix_below <= 0 or combined_premium < 0:
         raise HTTPException(422, "VIX threshold must be positive and premium cannot be negative")
-    return NiftyATMEntryFilters(parsed_time, india_vix_below, combined_premium, only_100s, force_at_1501)
+    if max_forced_entry_premium is not None and max_forced_entry_premium <= 0:
+        raise HTTPException(422, "maxForcedEntryPremium must be positive when provided")
+    if hard_stop_pct is not None and not (0 < hard_stop_pct <= 1):
+        raise HTTPException(422, "hardStopPct must be between 0 (exclusive) and 1 (inclusive) when provided")
+    return NiftyATMEntryFilters(
+        parsed_time,
+        india_vix_below,
+        combined_premium,
+        only_100s,
+        force_at_1501,
+        max_forced_entry_premium,
+        hard_stop_pct,
+    )
 
 
 @app.get("/api/strategies")
@@ -233,17 +256,23 @@ def backtest_strategy(
     strategy_id: str,
     start: date = Query(..., description="YYYY-MM-DD"),
     end: date = Query(..., description="YYYY-MM-DD"),
-    entryTime: str = Query("15:01", pattern=r"^\d{2}:\d{2}$"),
+    entryTime: str = Query("09:15", pattern=r"^\d{2}:\d{2}$"),
     indiaVixBelow: float = Query(15.0),
     combinedPremium: float = Query(50.0),
     only100s: bool = Query(True),
     forceAt1501: bool = Query(False),
+    maxForcedEntryPremium: Optional[float] = Query(None),
+    hardStopPct: Optional[float] = Query(None),
 ):
     strat = STRATEGIES.get(strategy_id)
     if strat is None:
         raise HTTPException(404, f"Unknown strategy '{strategy_id}'")
 
-    filters = _nifty_filters(entryTime, indiaVixBelow, combinedPremium, only100s, forceAt1501) if isinstance(strat, NiftyATMStraddleStrategy) else None
+    filters = (
+        _nifty_filters(entryTime, indiaVixBelow, combinedPremium, only100s, forceAt1501, maxForcedEntryPremium, hardStopPct)
+        if isinstance(strat, NiftyATMStraddleStrategy)
+        else None
+    )
     summary = _run_backtest_for(strat, start, end, filters=filters)
     _last_summary[strategy_id] = {"summary": summary, "run_at": datetime.utcnow()}
 
@@ -263,17 +292,23 @@ def backtest_strategy_stream(
     strategy_id: str,
     start: date = Query(..., description="YYYY-MM-DD"),
     end: date = Query(..., description="YYYY-MM-DD"),
-    entryTime: str = Query("15:01", pattern=r"^\d{2}:\d{2}$"),
+    entryTime: str = Query("09:15", pattern=r"^\d{2}:\d{2}$"),
     indiaVixBelow: float = Query(15.0),
     combinedPremium: float = Query(50.0),
     only100s: bool = Query(True),
     forceAt1501: bool = Query(False),
+    maxForcedEntryPremium: Optional[float] = Query(None),
+    hardStopPct: Optional[float] = Query(None),
 ):
     strat = STRATEGIES.get(strategy_id)
     if strat is None:
         raise HTTPException(404, f"Unknown strategy '{strategy_id}'")
 
-    filters = _nifty_filters(entryTime, indiaVixBelow, combinedPremium, only100s, forceAt1501) if isinstance(strat, NiftyATMStraddleStrategy) else None
+    filters = (
+        _nifty_filters(entryTime, indiaVixBelow, combinedPremium, only100s, forceAt1501, maxForcedEntryPremium, hardStopPct)
+        if isinstance(strat, NiftyATMStraddleStrategy)
+        else None
+    )
 
     def event_stream():
         trades = []

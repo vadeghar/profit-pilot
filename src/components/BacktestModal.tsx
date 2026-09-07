@@ -37,6 +37,11 @@ type NiftyFilters = {
   combinedPremium: string;
   only100s: boolean;
   forceAt1501: boolean;
+  // Optional (blank = unset): forced-entry above this is skipped rather
+  // than taken, and the hard stop scales as this fraction of the entry
+  // premium instead of the fixed absolute default.
+  maxForcedEntryPremium: string;
+  hardStopPct: string;
 };
 
 const money = (v: number) =>
@@ -55,8 +60,10 @@ const dateTime = (iso: string) =>
 const todayStr = () => new Date().toISOString().slice(0, 10);
 const daysAgoStr = (n: number) => new Date(Date.now() - n * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
-const entryTimes = Array.from({ length: (15 * 60 + 1) - (9 * 60 + 16) + 1 }, (_, index) => {
-  const totalMinutes = 9 * 60 + 16 + index;
+// V6: was (9 * 60 + 16) -- excluded the actual 09:15 market open used by
+// V2/V3/V4, so that starting point could never be selected in the UI.
+const entryTimes = Array.from({ length: (15 * 60 + 1) - (9 * 60 + 15) + 1 }, (_, index) => {
+  const totalMinutes = 9 * 60 + 15 + index;
   return `${String(Math.floor(totalMinutes / 60)).padStart(2, '0')}:${String(totalMinutes % 60).padStart(2, '0')}`;
 }).filter((value) => value <= '15:01');
 
@@ -117,11 +124,15 @@ export function BacktestModal({
   const [fromDate, setFromDate] = useState(daysAgoStr(180));
   const [toDate, setToDate] = useState(todayStr());
   const [filters, setFilters] = useState<NiftyFilters>({
-    entryTime: '15:01',
+    // V6: was '15:01' -- that default meant the strategy only ever scanned
+    // the last 34 minutes of the day unless a user manually changed this.
+    entryTime: '09:15',
     indiaVixBelow: '15',
     combinedPremium: '50',
     only100s: true,
     forceAt1501: false,
+    maxForcedEntryPremium: '',
+    hardStopPct: '',
   });
   const [validationError, setValidationError] = useState<string | null>(null);
 
@@ -143,6 +154,14 @@ export function BacktestModal({
       only100s: String(runRange.filters.only100s),
       forceAt1501: String(runRange.filters.forceAt1501),
     });
+    // Optional advanced filters -- only sent when the user actually set them,
+    // so leaving them blank preserves the same behavior as before they existed.
+    if (runRange.filters.maxForcedEntryPremium.trim() !== '') {
+      params.set('maxForcedEntryPremium', runRange.filters.maxForcedEntryPremium);
+    }
+    if (runRange.filters.hardStopPct.trim() !== '') {
+      params.set('hardStopPct', runRange.filters.hardStopPct);
+    }
     const url = `${API_BASE}/strategies/${strategyId}/backtest/stream?${params.toString()}`;
     const es = new EventSource(url);
 
@@ -190,13 +209,27 @@ export function BacktestModal({
     setStreamError(null);
     setTrades([]);
     setDone(null);
-    setPhase('running');
     const vix = Number(filters.indiaVixBelow);
     const premium = Number(filters.combinedPremium);
     if (!Number.isFinite(vix) || vix <= 0 || !Number.isFinite(premium) || premium < 0) {
       setValidationError('VIX must be positive and combined premium cannot be negative.');
       return;
     }
+    if (filters.maxForcedEntryPremium.trim() !== '') {
+      const cap = Number(filters.maxForcedEntryPremium);
+      if (!Number.isFinite(cap) || cap <= 0) {
+        setValidationError('Max forced-entry premium must be a positive number, or left blank for uncapped.');
+        return;
+      }
+    }
+    if (filters.hardStopPct.trim() !== '') {
+      const pct = Number(filters.hardStopPct);
+      if (!Number.isFinite(pct) || pct <= 0 || pct > 1) {
+        setValidationError('Hard stop % must be between 0 and 1 (e.g. 0.16 for 16%), or left blank for the fixed default.');
+        return;
+      }
+    }
+    setPhase('running');
     setRunRange({ start: fromDate, end: toDate, filters: { ...filters } });
   };
 
@@ -280,10 +313,28 @@ export function BacktestModal({
                   <input type="checkbox" checked={filters.forceAt1501} onChange={(e) => setFilters((current) => ({ ...current, forceAt1501: e.target.checked }))} className="h-4 w-4 accent-[#D29922]" />
                   3PM is my price — force entry at 15:01 if no earlier trade exists
                 </label>
+                <div>
+                  <label className="mb-1 block text-[10px] uppercase tracking-wider text-[#8B949E]">Max Forced-Entry Premium (optional)</label>
+                  <input
+                    type="number" min="0.01" step="0.01" placeholder="Uncapped"
+                    value={filters.maxForcedEntryPremium}
+                    onChange={(e) => setFilters((current) => ({ ...current, maxForcedEntryPremium: e.target.value }))}
+                    className="h-9 w-full border border-[#30363D] bg-[#161B22] px-3 text-xs outline-none focus:border-[#2EA043]"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-[10px] uppercase tracking-wider text-[#8B949E]">Hard Stop % of Entry (optional)</label>
+                  <input
+                    type="number" min="0.01" max="1" step="0.01" placeholder="Fixed default"
+                    value={filters.hardStopPct}
+                    onChange={(e) => setFilters((current) => ({ ...current, hardStopPct: e.target.value }))}
+                    className="h-9 w-full border border-[#30363D] bg-[#161B22] px-3 text-xs outline-none focus:border-[#2EA043]"
+                  />
+                </div>
               </div>
             )}
 
-            <div className="mt-3 text-[10px] text-[#8B949E]">Entry filters apply only to the NIFTY ATM Straddle. All averaging, target, stop-loss, and exit rules remain unchanged.</div>
+            <div className="mt-3 text-[10px] text-[#8B949E]">Entry filters apply only to the NIFTY ATM Straddle. All averaging, target, stop-loss, and exit rules remain unchanged unless overridden by the optional filters above.</div>
 
             {validationError && <div className="mt-3 text-xs text-[#F85149]">{validationError}</div>}
 

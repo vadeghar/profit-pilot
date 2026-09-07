@@ -23,12 +23,6 @@ into a single NiftyATMEntryFilters object so the Strategy screen can
 expose them as UI filters instead of shipping four near-duplicate branches.
 
 V6 fixes (see PR description for the full review that found these):
-  - NiftyATMEntryFilters.entry_time now defaults to market open, not
-    15:01 -- the V5 default silently reduced the scan window to the
-    last 34 minutes of the day for anyone who didn't touch the filters.
-  - The 3:01 PM forced-entry fallback is restored to ">= 15:01, keep
-    scanning to force-exit" (matches the original V3 spec) instead of
-    "== 15:01, stop scanning right after" (a V5 regression).
   - Non-100s strike selection is back to the DB-backed nearest-listed
     strike instead of a pure rounding formula.
   - Optional max_forced_entry_premium and hard_stop_pct filters let the
@@ -38,6 +32,22 @@ V6 fixes (see PR description for the full review that found these):
     touched, not the bar's raw close.
   - net_pnl now subtracts an estimated transaction-cost model instead of
     always equaling the pre-cost realized_pnl.
+
+V6 entry-window correction (post-review adjustment):
+  - No entry -- normal or forced -- may ever occur after 15:01, full
+    stop. The scan itself never looks past that boundary. When
+    force_at_1501 is on and no normal entry happened by 15:01, exactly
+    one forced-entry attempt is made using the last available NIFTY/VIX
+    observation at or before 15:01 (whatever the CE+PE premium is at
+    that point, VIX permitting) -- there is no further scanning toward
+    15:35 hoping for a better VIX reading. This replaces an earlier
+    "keep scanning to force-exit" interpretation that turned out not to
+    match the intended design: the 15:01 cutoff is a hard ceiling on
+    when a trade can be entered, not just a checkpoint.
+  - Default filters changed to entry_time=14:00, only_100s=False,
+    force_at_1501=True -- i.e. the default preset now matches the V3
+    entry-time/strike behavior (2:00 PM start, 50-point strikes, forced
+    3:01 PM fallback) rather than a bare market-open scan.
 
 Scope:
   - This strategy is STRICTLY for NIFTY expiry trading days.
@@ -75,6 +85,7 @@ UNDERLYING = "NIFTY 50"
 VIX_UNDERLYING = "INDIA VIX"
 
 MARKET_OPEN_TIME = time(9, 15)
+DEFAULT_ENTRY_TIME = time(14, 0)
 FORCED_INITIAL_ENTRY_TIME = time(15, 1)
 FORCE_EXIT_TIME = time(15, 35)
 MARKET_TZ = ZoneInfo("Asia/Kolkata")
@@ -151,11 +162,11 @@ def nearest_available_strike(expiry: date, spot: float) -> Optional[float]:
 
 @dataclass(frozen=True)
 class NiftyATMEntryFilters:
-    entry_time: time = MARKET_OPEN_TIME
+    entry_time: time = DEFAULT_ENTRY_TIME
     india_vix_below: float = VIX_MAX
     combined_premium: float = INITIAL_ENTRY_MAX_PREMIUM
-    only_100s: bool = True
-    force_at_1501: bool = False
+    only_100s: bool = False
+    force_at_1501: bool = True
     max_forced_entry_premium: Optional[float] = None
     hard_stop_pct: Optional[float] = None
 
@@ -356,11 +367,19 @@ def run_strategy_for_day(trading_date: date, mode: Mode = Mode.BACKTEST, filters
     ce_price_at_entry = pe_price_at_entry = combined_at_entry = None
     vix_at_entry = spot_at_entry = None
     forced_entry = False
+    last_ts_at_or_before_cutoff = None
 
+    # HARD RULE: no entry -- normal or forced -- may ever occur after
+    # FORCED_INITIAL_ENTRY_TIME (15:01). The scan itself never looks past
+    # that boundary. If force_at_1501 is on and nothing qualified during
+    # the scan, exactly one forced-entry attempt is made afterwards using
+    # the last available observation at or before the cutoff -- there is
+    # no further scanning toward 15:35 looking for a better VIX reading.
     for ts in sorted(set(spot_df.index) & set(vix_df.index)):
         market_time = _market_time(ts)
-        if market_time >= FORCE_EXIT_TIME:
+        if market_time > FORCED_INITIAL_ENTRY_TIME:
             break
+        last_ts_at_or_before_cutoff = ts
 
         vix_val = float(vix_df.loc[ts, "close"])
         if market_time < filters.entry_time or vix_val >= filters.india_vix_below:
@@ -380,23 +399,37 @@ def run_strategy_for_day(trading_date: date, mode: Mode = Mode.BACKTEST, filters
             continue
 
         combined = ce_p + pe_p
-        # V3: "3pm is my price". If no normal entry has happened by 15:01,
-        # keep scanning (VIX permitting) all the way to force-exit for the
-        # first observation that qualifies, even at a premium above the
-        # normal ceiling -- unless max_forced_entry_premium says it's too
-        # rich, in which case keep looking rather than forcing a bad entry.
-        is_forced_candidate = filters.force_at_1501 and market_time >= FORCED_INITIAL_ENTRY_TIME
-        if is_forced_candidate and filters.max_forced_entry_premium is not None and combined > filters.max_forced_entry_premium:
-            continue
-
-        if combined <= filters.combined_premium or is_forced_candidate:
+        if combined <= filters.combined_premium:
             entry_ts = ts
-            forced_entry = is_forced_candidate and combined > filters.combined_premium
             locked_atm_strike, ce_instr, pe_instr = strike, ce_candidate, pe_candidate
             lot_size = int(ce_instr["lot_size"])
             ce_price_at_entry, pe_price_at_entry, combined_at_entry = ce_p, pe_p, combined
             vix_at_entry, spot_at_entry = vix_val, spot
             break
+
+    if entry_ts is None and filters.force_at_1501 and last_ts_at_or_before_cutoff is not None:
+        # "3pm is my price": take the ATM CE+PE at whatever price they're
+        # at by the cutoff, regardless of the normal premium ceiling --
+        # but never past the cutoff, and VIX must still be below the
+        # threshold.
+        ts = last_ts_at_or_before_cutoff
+        vix_val = float(vix_df.loc[ts, "close"])
+        if vix_val < filters.india_vix_below:
+            spot = float(spot_df.loc[ts, "close"])
+            strike = preferred_atm_strike(spot) if filters.only_100s else nearest_available_strike(expiry, spot)
+            ce_candidate = repo.get_instrument(UNDERLYING, "CE", expiry, strike) if strike is not None else None
+            pe_candidate = repo.get_instrument(UNDERLYING, "PE", expiry, strike) if strike is not None else None
+            ce_p = repo.get_price_at_or_before(ce_candidate["id"], ts) if ce_candidate is not None else None
+            pe_p = repo.get_price_at_or_before(pe_candidate["id"], ts) if pe_candidate is not None else None
+            if ce_p is not None and pe_p is not None:
+                combined = ce_p + pe_p
+                if filters.max_forced_entry_premium is None or combined <= filters.max_forced_entry_premium:
+                    entry_ts = ts
+                    forced_entry = True
+                    locked_atm_strike, ce_instr, pe_instr = strike, ce_candidate, pe_candidate
+                    lot_size = int(ce_instr["lot_size"])
+                    ce_price_at_entry, pe_price_at_entry, combined_at_entry = ce_p, pe_p, combined
+                    vix_at_entry, spot_at_entry = vix_val, spot
 
     if entry_ts is None:
         record.status = StrategyState.NO_ENTRY.value

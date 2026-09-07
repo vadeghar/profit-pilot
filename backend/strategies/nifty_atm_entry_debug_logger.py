@@ -1,11 +1,9 @@
 """Diagnostic logger for the NIFTY ATM Straddle expiry-day entry scan.
 
 This mirrors strategies.nifty_atm_straddle.run_strategy_for_day()'s entry
-loop exactly (same filters object, same conditions) so it can be trusted as
-a diagnostic. It previously drifted from the real strategy logic (V1-V4)
-and introduced its own regressions on top of that during the V5 filter
-unification -- see the V6 PR description for details. Keep this file's
-entry-scan logic in lockstep with the real loop in nifty_atm_straddle.py.
+logic exactly (same filters object, same two-phase scan-then-forced-attempt
+structure) so it can be trusted as a diagnostic. Keep this file's logic in
+lockstep with the real loop in nifty_atm_straddle.py.
 """
 from datetime import date, datetime, time
 from pathlib import Path
@@ -54,7 +52,7 @@ def run_entry_debug_log(trading_date: date, log_path: Path, filters: NiftyATMEnt
     lines: list[str] = [
         "=" * 200,
         f"NIFTY ATM STRADDLE V6 ENTRY DEBUG | EXPIRY DATE={trading_date}",
-        f"Window={MARKET_OPEN} -> {FORCE_EXIT} IST | Entry after {filters.entry_time.strftime('%H:%M')} | VIX < {filters.india_vix_below} | Combined CE+PE <= {filters.combined_premium} | Only 100s={filters.only_100s} | 3PM force={filters.force_at_1501} | Max forced premium={filters.max_forced_entry_premium} | Hard stop %={filters.hard_stop_pct}",
+        f"Window={MARKET_OPEN} -> {FORCED_INITIAL_ENTRY} IST (hard cutoff -- no entry after 15:01) | Entry after {filters.entry_time.strftime('%H:%M')} | VIX < {filters.india_vix_below} | Combined CE+PE <= {filters.combined_premium} | Only 100s={filters.only_100s} | 3PM force={filters.force_at_1501} | Max forced premium={filters.max_forced_entry_premium} | Hard stop %={filters.hard_stop_pct}",
         "SCOPE=NIFTY WEEKLY OR MONTHLY EXPIRY DAYS ONLY",
         "Index data policy=EXACT -> PREVIOUS AVAILABLE CANDLE (NO LOOK-AHEAD)",
         "Live deployment note: live deployment will use broker API market data; historical gap fallback should normally never be exercised.",
@@ -84,11 +82,19 @@ def run_entry_debug_log(trading_date: date, log_path: Path, filters: NiftyATMEnt
     lines.append("TIME_IST | VIX | VIX_SOURCE_IST | NIFTY | NIFTY_SOURCE_IST | ATM | CE | PE | CE+PE | RESULT")
     lines.append("-" * 200)
 
+    entry_found = False
+    last_ts_at_or_before_cutoff = None
+
+    # PHASE 1: normal scan, hard-capped at the 15:01 cutoff. Mirrors
+    # nifty_atm_straddle.run_strategy_for_day() exactly -- no entry may
+    # occur past this boundary, forced or otherwise.
     for ts in common_ts:
         market_time = ts.astimezone(MARKET_TZ).time().replace(tzinfo=None)
-        if market_time >= FORCE_EXIT:
-            lines.append(f"{_market_ts(ts)} | RESULT=SCAN_STOP | reason=FORCE_EXIT_TIME")
+        if market_time > FORCED_INITIAL_ENTRY:
+            lines.append(f"{_market_ts(ts)} | RESULT=SCAN_STOP | reason=PAST_15:01_CUTOFF")
             break
+        last_ts_at_or_before_cutoff = ts
+
         vix = float(vix_df.loc[ts, "close"])
         spot = float(spot_df.loc[ts, "close"])
         vix_source = vix_df.loc[ts, "source_ts"] if "source_ts" in vix_df.columns else ts
@@ -120,37 +126,50 @@ def run_entry_debug_log(trading_date: date, log_path: Path, filters: NiftyATMEnt
             lines.append(f"{_market_ts(ts)} | {vix:.4f} | {vix_source_text} | {spot:.2f} | {nifty_source_text} | ATM={strike} | CE={ce_p} | PE={pe_p} | RESULT=SKIP_MISSING_OPTION_PRICE | DATA={fallback_text}")
             continue
         combined = ce_p + pe_p
-        is_forced_candidate = filters.force_at_1501 and market_time >= FORCED_INITIAL_ENTRY
-        forced_capped_out = (
-            is_forced_candidate
-            and filters.max_forced_entry_premium is not None
-            and combined > filters.max_forced_entry_premium
-        )
-        forced_entry = is_forced_candidate and not forced_capped_out
-        entry_allowed = (combined <= filters.combined_premium or forced_entry) and not forced_capped_out
-        if forced_capped_out:
-            result = "SKIP_FORCED_PREMIUM_CAP"
-        elif forced_entry and combined > filters.combined_premium:
-            result = "INITIAL_FORCED_1501"
-        elif entry_allowed:
-            result = "INITIAL_ENTRY"
-        else:
-            result = "SKIP_PREMIUM"
+        entry_allowed = combined <= filters.combined_premium
+        result = "INITIAL_ENTRY" if entry_allowed else "SKIP_PREMIUM"
         lines.append(
             f"{_market_ts(ts)} | {vix:.4f} | {vix_source_text} | {spot:.2f} | {nifty_source_text} | ATM={strike} | "
             f"CE={ce_p:.2f} | PE={pe_p:.2f} | CE+PE={combined:.2f} | RESULT={result} | DATA={fallback_text}"
         )
         if entry_allowed:
-            entry_reason = "INITIAL_FORCED_1501" if (forced_entry and combined > filters.combined_premium) else "INITIAL"
-            lines.append(f"ENTRY_WOULD_BE_TAKEN={_market_ts(ts)} | REASON={entry_reason} | ATM={strike} | CE={ce_p:.2f} | PE={pe_p:.2f} | SUM={combined:.2f} | VIX={vix:.4f} | VIX_SOURCE={vix_source_text} | NIFTY_SOURCE={nifty_source_text}")
+            lines.append(f"ENTRY_WOULD_BE_TAKEN={_market_ts(ts)} | REASON=INITIAL | ATM={strike} | CE={ce_p:.2f} | PE={pe_p:.2f} | SUM={combined:.2f} | VIX={vix:.4f} | VIX_SOURCE={vix_source_text} | NIFTY_SOURCE={nifty_source_text}")
             logger.info(
-                "[NIFTY ATM V6 DEBUG] ENTRY_WOULD_BE_TAKEN=%s | REASON=%s | ATM=%s | CE=%.2f | PE=%.2f | SUM=%.2f | VIX=%.4f | DATA=%s",
-                _market_ts(ts), entry_reason, strike, ce_p, pe_p, combined, vix, fallback_text,
+                "[NIFTY ATM V6 DEBUG] ENTRY_WOULD_BE_TAKEN=%s | REASON=INITIAL | ATM=%s | CE=%.2f | PE=%.2f | SUM=%.2f | VIX=%.4f | DATA=%s",
+                _market_ts(ts), strike, ce_p, pe_p, combined, vix, fallback_text,
             )
+            entry_found = True
             break
-        # NOTE: no early `break` on time here (beyond the FORCE_EXIT check
-        # above) -- forced-entry scanning must be allowed to continue past
-        # 15:01 all the way to force-exit, per the V3 spec.
+
+    # PHASE 2: exactly one forced-entry attempt at the last observation
+    # at or before the 15:01 cutoff -- no further scanning toward 15:35.
+    if not entry_found and filters.force_at_1501 and last_ts_at_or_before_cutoff is not None:
+        ts = last_ts_at_or_before_cutoff
+        vix = float(vix_df.loc[ts, "close"])
+        spot = float(spot_df.loc[ts, "close"])
+        if vix >= filters.india_vix_below:
+            lines.append(f"{_market_ts(ts)} | RESULT=SKIP_FORCED_VIX | vix={vix:.4f}")
+        else:
+            strike = preferred_atm_strike(spot) if filters.only_100s else nearest_available_strike(expiry, spot)
+            ce = repo.get_instrument(UNDERLYING, "CE", expiry, strike) if strike is not None else None
+            pe = repo.get_instrument(UNDERLYING, "PE", expiry, strike) if strike is not None else None
+            ce_p = repo.get_price_at_or_before(ce["id"], ts) if ce is not None else None
+            pe_p = repo.get_price_at_or_before(pe["id"], ts) if pe is not None else None
+            if ce_p is None or pe_p is None:
+                lines.append(f"{_market_ts(ts)} | RESULT=SKIP_FORCED_MISSING_PRICE | ATM={strike}")
+            else:
+                combined = ce_p + pe_p
+                capped_out = filters.max_forced_entry_premium is not None and combined > filters.max_forced_entry_premium
+                if capped_out:
+                    lines.append(f"{_market_ts(ts)} | ATM={strike} | CE={ce_p:.2f} | PE={pe_p:.2f} | CE+PE={combined:.2f} | RESULT=SKIP_FORCED_PREMIUM_CAP")
+                else:
+                    lines.append(f"{_market_ts(ts)} | ATM={strike} | CE={ce_p:.2f} | PE={pe_p:.2f} | CE+PE={combined:.2f} | RESULT=INITIAL_FORCED_1501")
+                    lines.append(f"ENTRY_WOULD_BE_TAKEN={_market_ts(ts)} | REASON=INITIAL_FORCED_1501 | ATM={strike} | CE={ce_p:.2f} | PE={pe_p:.2f} | SUM={combined:.2f} | VIX={vix:.4f}")
+                    logger.info(
+                        "[NIFTY ATM V6 DEBUG] ENTRY_WOULD_BE_TAKEN=%s | REASON=INITIAL_FORCED_1501 | ATM=%s | CE=%.2f | PE=%.2f | SUM=%.2f | VIX=%.4f",
+                        _market_ts(ts), strike, ce_p, pe_p, combined, vix,
+                    )
+
     lines.append("=== V6 INITIAL ENTRY SCAN END ===")
     _write(lines, log_path)
 

@@ -2,9 +2,10 @@ FROM node:20-alpine
 
 WORKDIR /app
 
-# Install dependencies & github MCP server binary
-RUN npm install express @modelcontextprotocol/sdk @modelcontextprotocol/server-github -g
-ENV NODE_PATH=/usr/local/lib/node_modules
+# Create package.json to enable module resolution
+RUN npm init -y && \
+    npm pkg set type="module" && \
+    npm install express @modelcontextprotocol/sdk @modelcontextprotocol/server-github
 
 COPY server.mjs ./
 

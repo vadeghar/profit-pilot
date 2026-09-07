@@ -2,9 +2,12 @@ FROM node:20-alpine
 
 WORKDIR /app
 
-# Install dependencies & github MCP server binary
-RUN npm install express @modelcontextprotocol/sdk @modelcontextprotocol/server-github -g
-ENV NODE_PATH=/usr/local/lib/node_modules
+# Create package.json and install packages locally
+RUN npm init -y && \
+    npm install express @modelcontextprotocol/sdk @modelcontextprotocol/server-github
+
+# Expose globally installed binaries (like mcp-server-github) to PATH
+ENV PATH="/app/node_modules/.bin:${PATH}"
 
 COPY server.mjs ./
 
